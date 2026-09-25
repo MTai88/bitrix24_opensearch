@@ -1,0 +1,551 @@
+<?php
+
+namespace Mtai\OpenSearch;
+
+use Bitrix\Main\Loader;
+
+/**
+ * Индексация сущностей в OpenSearch.
+ *
+ * Три режима:
+ *  - точечный (по событиям изменения сущностей);
+ *  - батчевый (полный переиндекс по шагам с прогрессом);
+ *  - инкрементальный (агент: всё изменённое после метки времени).
+ */
+final class Indexer
+{
+	private IndexManager $indexManager;
+	private DocumentBuilder $builder;
+
+	public function __construct(?IndexManager $indexManager = null, ?DocumentBuilder $builder = null)
+	{
+		$this->indexManager = $indexManager ?? new IndexManager();
+		$this->builder = $builder ?? new DocumentBuilder();
+	}
+
+	private function indexDocument(array $document): bool
+	{
+		$id = IndexManager::documentId(
+			(string)$document['entity_type'],
+			(int)$document['entity_id']
+		);
+
+		$this->indexManager->client()->indexDocument(
+			IndexManager::indexName(),
+			$id,
+			$document
+		);
+
+		return true;
+	}
+
+	// ------------------------------------------------------------------
+	// Точечная индексация (события)
+	// ------------------------------------------------------------------
+
+	public function indexCrmEntity(int $entityTypeId, int $entityId): bool
+	{
+		if (!in_array($entityTypeId, Config::allowedCrmEntityTypeIds(), true))
+		{
+			return false;
+		}
+
+		$document = $this->builder->buildCrmDocument($entityTypeId, $entityId);
+		if ($document === null)
+		{
+			// Сущность исчезла — убираем документ из индекса.
+			return $this->deleteCrmEntity($entityTypeId, $entityId);
+		}
+
+		return $this->indexDocument($document);
+	}
+
+	public function deleteCrmEntity(int $entityTypeId, int $entityId): bool
+	{
+		$typeName = DocumentBuilder::crmEntityTypeCode($entityTypeId);
+
+		return $this->indexManager->client()->deleteDocument(
+			IndexManager::indexName(),
+			IndexManager::documentId($typeName, $entityId)
+		);
+	}
+
+	public function indexUser(int $userId): bool
+	{
+		$document = $this->builder->buildUserDocument($userId);
+		if ($document === null)
+		{
+			return $this->deleteUser($userId);
+		}
+
+		return $this->indexDocument($document);
+	}
+
+	public function deleteUser(int $userId): bool
+	{
+		return $this->indexManager->client()->deleteDocument(
+			IndexManager::indexName(),
+			IndexManager::documentId(IndexManager::TYPE_USER, $userId)
+		);
+	}
+
+	public function indexIblockElement(int $elementId): bool
+	{
+		$document = $this->builder->buildIblockElementDocument($elementId);
+		if ($document === null)
+		{
+			return $this->deleteIblockElement($elementId);
+		}
+
+		if (!in_array((int)$document['iblock_id'], Config::iblockIds(), true))
+		{
+			// Элемент переехал в инфоблок, который не индексируется.
+			return $this->deleteIblockElement($elementId);
+		}
+
+		return $this->indexDocument($document);
+	}
+
+	public function deleteIblockElement(int $elementId): bool
+	{
+		return $this->indexManager->client()->deleteDocument(
+			IndexManager::indexName(),
+			IndexManager::documentId(IndexManager::TYPE_IBLOCK, $elementId)
+		);
+	}
+
+	// ------------------------------------------------------------------
+	// Полный переиндекс по шагам
+	// ------------------------------------------------------------------
+
+	/**
+	 * План переиндексации: последовательность шагов с числом элементов
+	 * (там, где его можно дёшево посчитать).
+	 *
+	 * @return array<int, array{code: string, title: string, total: ?int}>
+	 */
+	public function reindexPlan(): array
+	{
+		$steps = [];
+		$allowed = Config::allowedCrmEntityTypeIds();
+
+		$classics = [
+			\CCrmOwnerType::Lead => ['lead', 'Лиды', '\Bitrix\Crm\LeadTable'],
+			\CCrmOwnerType::Deal => ['deal', 'Сделки', '\Bitrix\Crm\DealTable'],
+			\CCrmOwnerType::Contact => ['contact', 'Контакты', '\Bitrix\Crm\ContactTable'],
+			\CCrmOwnerType::Company => ['company', 'Компании', '\Bitrix\Crm\CompanyTable'],
+			\CCrmOwnerType::Quote => ['quote', 'Квоты', '\Bitrix\Crm\QuoteTable'],
+		];
+		foreach ($classics as $typeId => [$code, $title, $tableClass])
+		{
+			if (!in_array($typeId, $allowed, true))
+			{
+				continue;
+			}
+			$total = null;
+			if (class_exists($tableClass))
+			{
+				try
+				{
+					$total = (int)$tableClass::getCount([]);
+				}
+				catch (\Throwable)
+				{
+				}
+			}
+			$steps[] = ['code' => 'crm_' . $code, 'title' => 'CRM: ' . $title, 'total' => $total];
+		}
+
+		if (in_array(\CCrmOwnerType::SmartInvoice, $allowed, true))
+		{
+			$steps[] = ['code' => 'crm_smart_invoice', 'title' => 'CRM: Смарт-счета', 'total' => null];
+		}
+
+		foreach (Config::dynamicEntityTypeIds() as $typeId)
+		{
+			if (!in_array($typeId, $allowed, true))
+			{
+				continue;
+			}
+			$steps[] = [
+				'code' => 'crm_dynamic_' . $typeId,
+				'title' => 'CRM: смарт-процесс #' . $typeId,
+				'total' => null,
+			];
+		}
+
+		if (Config::searchUsersEnabled())
+		{
+			$total = null;
+			try
+			{
+				$total = (int)\Bitrix\Main\UserTable::getCount(['=ACTIVE' => 'Y']);
+			}
+			catch (\Throwable)
+			{
+			}
+			$steps[] = ['code' => 'user', 'title' => 'Пользователи', 'total' => $total];
+		}
+
+		if (Loader::includeModule('iblock'))
+		{
+			foreach (Config::iblockIds() as $iblockId)
+			{
+				$iblock = \CIBlock::GetArrayByID($iblockId);
+				if (!$iblock)
+				{
+					continue;
+				}
+				$total = null;
+				try
+				{
+					$total = (int)\CIBlockElement::GetList([], ['IBLOCK_ID' => $iblockId], true);
+				}
+				catch (\Throwable)
+				{
+				}
+				$steps[] = [
+					'code' => 'iblock_' . $iblockId,
+					'title' => 'Инфоблок: ' . ($iblock['NAME'] ?? $iblockId),
+					'total' => $total,
+				];
+			}
+		}
+
+		return $steps;
+	}
+
+	/**
+	 * Один шаг переиндексации.
+	 *
+	 * @return array{processed: int, last_id: int, done: bool}
+	 */
+	public function runStep(string $code, int $lastId, ?int $limit = null): array
+	{
+		$limit ??= Config::batchSize();
+		$index = IndexManager::indexName();
+		$client = $this->indexManager->client();
+
+		$ids = $this->fetchStepIds($code, $lastId, $limit);
+		if ($ids === [])
+		{
+			return ['processed' => 0, 'last_id' => $lastId, 'done' => true];
+		}
+
+		$bulk = [];
+		foreach ($ids as $id)
+		{
+			$document = $this->buildStepDocument($code, (int)$id);
+			if ($document !== null)
+			{
+				$docId = IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id']);
+				$bulk[] = ['index' => ['_index' => $index, '_id' => $docId]];
+				$bulk[] = $document;
+			}
+		}
+
+		if ($bulk !== [])
+		{
+			$client->bulk($bulk);
+		}
+
+		return [
+			'processed' => count($ids),
+			'last_id' => max($ids),
+			'done' => count($ids) < $limit,
+		];
+	}
+
+	/**
+	 * @return int[]
+	 */
+	private function fetchStepIds(string $code, int $lastId, int $limit): array
+	{
+		$order = ['ID' => 'ASC'];
+		$filter = ['>ID' => $lastId];
+
+		if ($code === 'user')
+		{
+			$filter['=ACTIVE'] = 'Y';
+			$rows = \Bitrix\Main\UserTable::getList([
+				'select' => ['ID'],
+				'filter' => $filter,
+				'order' => ['ID' => 'ASC'],
+				'limit' => $limit,
+			])->fetchAll();
+
+			return array_map(static fn ($r) => (int)$r['ID'], $rows);
+		}
+
+		if (mb_strpos($code, 'iblock_') === 0)
+		{
+			$iblockId = (int)mb_substr($code, 7);
+			$ids = [];
+			$result = \CIBlockElement::GetList(
+				['ID' => 'ASC'],
+				['>ID' => $lastId, '=IBLOCK_ID' => $iblockId, 'CHECK_PERMISSIONS' => 'N'],
+				false,
+				['nTopCount' => $limit],
+				['ID']
+			);
+			while ($row = $result->Fetch())
+			{
+				$ids[] = (int)$row['ID'];
+			}
+
+			return $ids;
+		}
+
+		if (!Loader::includeModule('crm'))
+		{
+			return [];
+		}
+
+		if (mb_strpos($code, 'crm_dynamic_') === 0)
+		{
+			$typeId = (int)mb_substr($code, 13);
+			$factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($typeId);
+			if (!$factory)
+			{
+				return [];
+			}
+			$items = $factory->getItems([
+				'select' => ['ID'],
+				'filter' => $filter,
+				'order' => $order,
+				'limit' => $limit,
+			]);
+
+			return array_map(static fn ($item) => (int)$item->getId(), $items);
+		}
+
+		$map = [
+			'crm_lead' => '\CCrmLead',
+			'crm_deal' => '\CCrmDeal',
+			'crm_contact' => '\CCrmContact',
+			'crm_company' => '\CCrmCompany',
+			'crm_quote' => '\CCrmQuote',
+		];
+
+		if ($code === 'crm_smart_invoice')
+		{
+			$factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory(\CCrmOwnerType::SmartInvoice);
+			if (!$factory)
+			{
+				return [];
+			}
+			$items = $factory->getItems([
+				'select' => ['ID'],
+				'filter' => $filter,
+				'order' => $order,
+				'limit' => $limit,
+			]);
+
+			return array_map(static fn ($item) => (int)$item->getId(), $items);
+		}
+
+		$class = $map[$code] ?? null;
+		if (!$class || !class_exists($class))
+		{
+			return [];
+		}
+
+		$ids = [];
+		$result = $class::GetListEx(
+			['ID' => 'ASC'],
+			$filter + ['CHECK_PERMISSIONS' => 'N'],
+			false,
+			['nTopCount' => $limit],
+			['ID']
+		);
+		while ($row = $result->Fetch())
+		{
+			$ids[] = (int)$row['ID'];
+		}
+
+		return $ids;
+	}
+
+	private function buildStepDocument(string $code, int $id): ?array
+	{
+		if ($code === 'user')
+		{
+			return $this->builder->buildUserDocument($id);
+		}
+
+		if (mb_strpos($code, 'iblock_') === 0)
+		{
+			return $this->builder->buildIblockElementDocument($id);
+		}
+
+		if ($code === 'crm_smart_invoice')
+		{
+			return $this->builder->buildCrmDocument(\CCrmOwnerType::SmartInvoice, $id);
+		}
+
+		if (mb_strpos($code, 'crm_dynamic_') === 0)
+		{
+			$typeId = (int)mb_substr($code, 13);
+
+			return $this->builder->buildCrmDocument($typeId, $id);
+		}
+
+		$map = [
+			'crm_lead' => \CCrmOwnerType::Lead,
+			'crm_deal' => \CCrmOwnerType::Deal,
+			'crm_contact' => \CCrmOwnerType::Contact,
+			'crm_company' => \CCrmOwnerType::Company,
+			'crm_quote' => \CCrmOwnerType::Quote,
+		];
+		$typeId = $map[$code] ?? null;
+
+		return $typeId !== null ? $this->builder->buildCrmDocument($typeId, $id) : null;
+	}
+
+	/**
+	 * Инкрементальная синхронизация: переиндексировать сущности,
+	 * изменённые после $since. Возвращает число обработанных.
+	 */
+	public function syncModifiedSince(string $since): int
+	{
+		$index = IndexManager::indexName();
+		$client = $this->indexManager->client();
+		$processed = 0;
+
+		$crmMap = [
+			\CCrmOwnerType::Lead => '\CCrmLead',
+			\CCrmOwnerType::Deal => '\CCrmDeal',
+			\CCrmOwnerType::Contact => '\CCrmContact',
+			\CCrmOwnerType::Company => '\CCrmCompany',
+			\CCrmOwnerType::Quote => '\CCrmQuote',
+		];
+		$allowed = Config::allowedCrmEntityTypeIds();
+
+		$bulk = [];
+		$flush = function () use ($client, $index, &$bulk, &$processed): void {
+			if ($bulk !== [])
+			{
+				$client->bulk($bulk);
+				$bulk = [];
+			}
+		};
+
+		foreach ($crmMap as $typeId => $class)
+		{
+			if (!in_array($typeId, $allowed, true))
+			{
+				continue;
+			}
+			try
+			{
+				$result = $class::GetListEx(
+					['ID' => 'ASC'],
+					[
+						'>=DATE_MODIFY' => $since,
+						'CHECK_PERMISSIONS' => 'N',
+					],
+					false,
+					false,
+					['ID']
+				);
+				$count = 0;
+				while ($row = $result->Fetch())
+				{
+					$document = $this->builder->buildCrmDocument($typeId, (int)$row['ID']);
+					if ($document !== null)
+					{
+						$bulk[] = ['index' => ['_index' => $index, '_id' =>
+							IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
+						]];
+						$bulk[] = $document;
+					}
+					$count++;
+					$processed++;
+					if (count($bulk) >= 200)
+					{
+						$flush();
+					}
+				}
+			}
+			catch (\Throwable)
+			{
+				// проблемы с конкретным типом не должны ронять синхронизацию
+			}
+		}
+
+		if (Config::searchUsersEnabled())
+		{
+			try
+			{
+				$rows = \Bitrix\Main\UserTable::getList([
+					'select' => ['ID'],
+					'filter' => ['>=TIMESTAMP_X' => $since],
+					'limit' => 5000,
+				])->fetchAll();
+				foreach ($rows as $row)
+				{
+					$document = $this->builder->buildUserDocument((int)$row['ID']);
+					if ($document !== null)
+					{
+						$bulk[] = ['index' => ['_index' => $index, '_id' =>
+							IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
+						]];
+						$bulk[] = $document;
+					}
+					$processed++;
+					if (count($bulk) >= 200)
+					{
+						$flush();
+					}
+				}
+			}
+			catch (\Throwable)
+			{
+			}
+		}
+
+		if (\Bitrix\Main\Loader::includeModule('iblock'))
+		{
+			foreach (Config::iblockIds() as $iblockId)
+			{
+				try
+				{
+					$result = \CIBlockElement::GetList(
+						['ID' => 'ASC'],
+						[
+							'>=TIMESTAMP_X' => $since,
+							'=IBLOCK_ID' => $iblockId,
+							'CHECK_PERMISSIONS' => 'N',
+						],
+						false,
+						false,
+						['ID']
+					);
+					while ($row = $result->Fetch())
+					{
+						$document = $this->builder->buildIblockElementDocument((int)$row['ID']);
+						if ($document !== null)
+						{
+							$bulk[] = ['index' => ['_index' => $index, '_id' =>
+								IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
+							]];
+							$bulk[] = $document;
+						}
+						$processed++;
+						if (count($bulk) >= 200)
+						{
+							$flush();
+						}
+					}
+				}
+				catch (\Throwable)
+				{
+				}
+			}
+		}
+
+		$flush();
+
+		return $processed;
+	}
+}
