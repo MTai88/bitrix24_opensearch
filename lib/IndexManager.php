@@ -66,6 +66,22 @@ final class IndexManager
 				],
 			],
 			'mappings' => [
+				// Отдельные поля сущностей (fields.<code>) создаются динамически;
+				// шаблон даёт им морфологический анализатор и субполе .en.
+				'dynamic_templates' => [
+					[
+						'morpho_text' => [
+							'match_mapping_type' => 'string',
+							'mapping' => [
+								'type' => 'text',
+								'analyzer' => 'morpho_ru',
+								'fields' => [
+									'en' => ['type' => 'text', 'analyzer' => 'morpho_en'],
+								],
+							],
+						],
+					],
+				],
 				'properties' => [
 					// Вид сущности: crm_lead, crm_deal, crm_contact, crm_company,
 					// crm_quote, crm_smart_invoice, crm_dynamic, user, iblock.
@@ -82,8 +98,9 @@ final class IndexManager
 					'title' => $textRu(['raw' => ['type' => 'keyword', 'normalizer' => 'lowercase']]),
 					// Подзаголовок (должность, компания, раздел инфоблока).
 					'subtitle' => $textRu(),
-					// Поисковый контент: содержимое, телефоны, email, статусы.
-					'body' => $textRu(),
+					// Отдельные поля сущностей — состав зависит от типа
+					// (comments, post, position, department, preview, content, ...).
+					'fields' => ['type' => 'object'],
 					// Телефоны в нормализованном виде (только цифры).
 					'phones' => ['type' => 'keyword'],
 					// Email в нижнем регистре.

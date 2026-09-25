@@ -200,4 +200,40 @@ final class Config
 	{
 		return self::getBool('replace_native_search');
 	}
+
+	/**
+	 * Выбранные для поиска поля скоупа.
+	 *
+	 * Опция ни разу не сохранялась (null) — все поля скоупа.
+	 * Сохранённый пустой список — сущность не участвует в поиске.
+	 *
+	 * @return string[]
+	 */
+	public static function selectedFields(string $scope): array
+	{
+		$available = FieldRegistry::fieldsForScope($scope);
+		try
+		{
+			$stored = Option::get(self::MODULE_ID, FieldRegistry::optionKey($scope), null);
+		}
+		catch (\Throwable)
+		{
+			$stored = null;
+		}
+		if ($stored === null)
+		{
+			return array_keys($available);
+		}
+
+		$selected = [];
+		foreach (preg_split('/[\s,;]+/u', (string)$stored) ?: [] as $code)
+		{
+			if (isset($available[$code]))
+			{
+				$selected[] = $code;
+			}
+		}
+
+		return $selected;
+	}
 }

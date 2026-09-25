@@ -135,47 +135,13 @@ final class SearchService
 	}
 
 	/**
-	 * Тело поискового запроса: multi_match по морфологическим полям
-	 * + фразовое усиление + точный поиск по телефону/email.
+	 * Тело поискового запроса: для каждого скоупа (лиды, сделки, ...)
+	 * строится своя ветка bool со своим фильтром типов и ONLY выбранными
+	 * полями этого скоупа — выбор полей одной сущности не открывает
+	 * поиск по полям другой.
 	 */
 	private function buildQuery(string $query, array $entityTypes, array $iblockIds, ?int $categoryId): array
 	{
-		$should = [
-			[
-				'multi_match' => [
-					'query' => $query,
-					'type' => 'best_fields',
-					'fields' => [
-						'title^5', 'title.en^5',
-						'subtitle^3', 'subtitle.en^3',
-						'body^1.2', 'body.en^1.2',
-					],
-					'operator' => 'or',
-				],
-			],
-			[
-				'multi_match' => [
-					'query' => $query,
-					'type' => 'phrase',
-					'fields' => ['title^8', 'subtitle^5'],
-					'slop' => 2,
-				],
-			],
-		];
-
-		// Поиск по телефону: запрос из цифр ищем как подстроку по нормализованным номерам.
-		$digits = preg_replace('/\D+/', '', $query) ?? '';
-		if (mb_strlen($digits) >= 3)
-		{
-			$should[] = ['wildcard' => ['phones' => ['value' => '*' . $digits . '*', 'boost' => 6]]];
-		}
-
-		// Email ищем точным совпадением (нормализовано в нижний регистр).
-		if (filter_var($query, FILTER_VALIDATE_EMAIL))
-		{
-			$should[] = ['term' => ['emails' => ['value' => mb_strtolower($query), 'boost' => 7]]];
-		}
-
 		$filter = [
 			['terms' => ['entity_type' => $entityTypes]],
 		];
@@ -197,18 +163,168 @@ final class SearchService
 			$filter[] = ['term' => ['category_id' => $categoryId]];
 		}
 
+		$typeCodesByScope = $this->entityTypeCodesByScope();
+
+		$scopeShoulds = [];
+		foreach ($this->searchedScopes() as $scope)
+		{
+			$scopeTypes = $typeCodesByScope[$scope] ?? [];
+			if ($scopeTypes === [])
+			{
+				continue;
+			}
+			$scopeQuery = $this->buildScopeQuery($scope, $query, $scopeTypes);
+			if ($scopeQuery !== null)
+			{
+				$scopeShoulds[] = $scopeQuery;
+			}
+		}
+
+		$bool = [
+			'filter' => $filter,
+		];
+		if ($scopeShoulds !== [])
+		{
+			$bool['should'] = $scopeShoulds;
+			$bool['minimum_should_match'] = 1;
+		}
+		else
+		{
+			// Все поля поиска сняты — не возвращаем всю выдачу.
+			$bool['filter'][] = ['match_none' => new \stdClass()];
+		}
+
 		return [
 			'size' => Config::searchLimit() * Config::candidateFactor(),
-			'query' => [
-				'bool' => [
-					'filter' => $filter,
-					'should' => $should,
-					'minimum_should_match' => 1,
-				],
-			],
+			'query' => ['bool' => $bool],
 			// Свежие изменения важнее при прочих равных.
 			'sort' => ['_score' => 'desc', 'date_update' => 'desc'],
 		];
+	}
+
+	/**
+	 * Ветка запроса одного скоупа: фильтр по его типам + поиск по его
+	 * выбранным полям (текст/телефон/email). null — полей нет.
+	 *
+	 * @param string[] $scopeTypes
+	 */
+	private function buildScopeQuery(string $scope, string $query, array $scopeTypes): ?array
+	{
+		$textFields = [];
+		$withPhones = false;
+		$withEmails = false;
+
+		foreach (Config::selectedFields($scope) as $code)
+		{
+			switch ($code)
+			{
+				case 'title':
+					$textFields[] = 'title^5';
+					$textFields[] = 'title.en^5';
+					break;
+				case 'content':
+					$textFields[] = 'fields.content^1.2';
+					$textFields[] = 'fields.content.en^1.2';
+					break;
+				case 'phone':
+					$withPhones = true;
+					break;
+				case 'email':
+					$withEmails = true;
+					break;
+				default:
+					$textFields[] = "fields.{$code}^2.5";
+					$textFields[] = "fields.{$code}.en^2.5";
+					break;
+			}
+		}
+		$textFields = array_values(array_unique($textFields));
+
+		$should = [];
+		if ($textFields !== [])
+		{
+			$should[] = [
+				'multi_match' => [
+					'query' => $query,
+					'type' => 'best_fields',
+					'fields' => $textFields,
+					'operator' => 'or',
+				],
+			];
+			$should[] = [
+				'multi_match' => [
+					'query' => $query,
+					'type' => 'phrase',
+					'fields' => $textFields,
+					'slop' => 2,
+					'boost' => 2,
+				],
+			];
+		}
+
+		// Поиск по телефону: запрос из цифр ищем как подстроку
+		// по нормализованным номерам.
+		$digits = preg_replace('/\D+/', '', $query) ?? '';
+		if ($withPhones && mb_strlen($digits) >= 3)
+		{
+			$should[] = ['wildcard' => ['phones' => ['value' => '*' . $digits . '*', 'boost' => 6]]];
+		}
+
+		// Email — точное совпадение и префикс.
+		if ($withEmails && filter_var($query, FILTER_VALIDATE_EMAIL))
+		{
+			$lower = mb_strtolower($query);
+			$should[] = ['term' => ['emails' => ['value' => $lower, 'boost' => 7]]];
+			$should[] = ['wildcard' => ['emails' => ['value' => $lower . '*', 'boost' => 4]]];
+		}
+
+		if ($should === [])
+		{
+			return null;
+		}
+
+		return [
+			'bool' => [
+				'filter' => [['terms' => ['entity_type' => $scopeTypes]]],
+				'should' => $should,
+				'minimum_should_match' => 1,
+			],
+		];
+	}
+
+	/**
+	 * Скоупы, участвующие в текущем поиске.
+	 *
+	 * @return string[]
+	 */
+	private function searchedScopes(): array
+	{
+		return FieldRegistry::activeScopes();
+	}
+
+	/**
+	 * Коды entity_type индекса по скоупам — для ограничивающих фильтров
+	 * общих полей (phones/emails).
+	 *
+	 * @return array<string, string[]>
+	 */
+	private function entityTypeCodesByScope(): array
+	{
+		$result = [];
+		foreach (Config::allowedCrmEntityTypeIds() as $typeId)
+		{
+			$result[FieldRegistry::scopeForCrmType($typeId)][] = DocumentBuilder::crmEntityTypeCode($typeId);
+		}
+		if (Config::searchUsersEnabled())
+		{
+			$result[FieldRegistry::SCOPE_USER][] = IndexManager::TYPE_USER;
+		}
+		if (Config::iblockIds() !== [])
+		{
+			$result[FieldRegistry::SCOPE_IBLOCK][] = IndexManager::TYPE_IBLOCK;
+		}
+
+		return $result;
 	}
 
 	/**

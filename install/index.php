@@ -100,17 +100,17 @@ class mtai_opensearch extends CModule
 			true
 		);
 
-		// Страница обслуживания индекса в админке.
-		if (is_dir($p = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin'))
-		{
-			CheckDirPath($p . '/');
-			CopyDirFiles(
-				__DIR__ . '/admin/',
-				$p,
-				true,
-				true
-			);
-		}
+		// Страница обслуживания индекса: в /bitrix/admin кладём заглушку,
+		// которая подключает реальную страницу из каталога модуля —
+		// так разрешение языковых файлов идёт по пути модуля
+		// (lang/ru/install/admin/...), как у штатных модулей.
+		$stubPath = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/mtai_opensearch.php';
+		CheckDirPath(dirname($stubPath) . '/');
+		file_put_contents(
+			$stubPath,
+			'<?php require($_SERVER["DOCUMENT_ROOT"] . "/local/modules/mtai.opensearch/install/admin/mtai_opensearch.php");'
+			. "\n"
+		);
 
 		return true;
 	}

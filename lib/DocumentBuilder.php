@@ -7,10 +7,12 @@ use Bitrix\Main\Loader;
 /**
  * Строит документы для индекса OpenSearch из сущностей Bitrix24.
  *
- * Для CRM-сущностей тело документа (body) берётся из штатных билдеров
- * поискового контента (Crm\Search\SearchContentBuilderFactory) — туда
- * попадают заголовки, телефоны, email, статусы и связанные данные,
- * т.е. индексируется всё то же, что ищет штатная CRM.
+ * Структура документа:
+ *   title / subtitle / body — заголовок, подзаголовок и полный поисковый
+ *     контент (для CRM — штатные билдеры Crm\Search\SearchContentBuilderFactory);
+ *   fields.<code> — отдельные поля сущности (comments, post, preview, ...),
+ *     по которым можно ограничить область поиска в настройках модуля;
+ *   phones / emails — нормализованные контакты для точного поиска.
  */
 final class DocumentBuilder
 {
@@ -44,30 +46,36 @@ final class DocumentBuilder
 			// контент соберётся при следующем полном переиндексе
 		}
 
+		$row = $this->fetchCrmRow($entityTypeId, $entityId);
+
 		$categoryId = 0;
 		if ($entityTypeId === \CCrmOwnerType::Deal)
 		{
-			$row = \CCrmDeal::GetListEx(
-				[],
-				['=ID' => $entityId, 'CHECK_PERMISSIONS' => 'N'],
-				false,
-				['nTopCount' => 1],
-				['ID', 'CATEGORY_ID']
-			)->Fetch();
 			$categoryId = (int)($row['CATEGORY_ID'] ?? 0);
 		}
 
+		$contacts = $this->crmPhonesAndEmails($entityTypeId, $entityId);
+
+		$fields = $this->crmFields($entityTypeId, $row);
+		// Штатный поисковый контент кладём в fields.content, а не в общее
+		// поле body: область поиска задаются по скоупам, и контент одного
+		// типа не должен открывать поиск по контенту другого.
+		if (trim($body) !== '')
+		{
+			$fields['content'] = $body;
+		}
+
 		return [
-			'entity_type' => $this->crmEntityTypeName($entityTypeId),
+			'entity_type' => self::crmEntityTypeCode($entityTypeId),
 			'crm_type_id' => $entityTypeId,
 			'entity_id' => $entityId,
 			'category_id' => $categoryId,
 			'iblock_id' => 0,
 			'title' => $title,
 			'subtitle' => '',
-			'body' => $body,
-			'phones' => [],
-			'emails' => [],
+			'fields' => $fields,
+			'phones' => $contacts['phones'],
+			'emails' => $contacts['emails'],
 			'url' => '',
 			'attrs' => [],
 			'date_update' => date('c'),
@@ -79,56 +87,28 @@ final class DocumentBuilder
 	 */
 	private function crmTitle(int $entityTypeId, int $entityId): ?string
 	{
+		$row = $this->fetchCrmRow($entityTypeId, $entityId);
+		if ($row === null)
+		{
+			return null;
+		}
+
 		switch ($entityTypeId)
 		{
 			case \CCrmOwnerType::Lead:
-				$row = \CCrmLead::GetListEx(
-					[],
-					['=ID' => $entityId, 'CHECK_PERMISSIONS' => 'N'],
-					false,
-					['nTopCount' => 1],
-					['ID', 'TITLE', 'HONORIFIC', 'NAME', 'SECOND_NAME', 'LAST_NAME']
-				)->Fetch();
-				if (!$row)
-				{
-					return null;
-				}
-
 				return (string)($row['TITLE'] ?: trim(
 					($row['NAME'] ?? '') . ' ' . ($row['SECOND_NAME'] ?? '') . ' ' . ($row['LAST_NAME'] ?? '')
 				));
 
 			case \CCrmOwnerType::Deal:
 			case \CCrmOwnerType::Quote:
-				$row = $this->fetchCrmRow($entityTypeId, $entityId, ['ID', 'TITLE']);
-
-				return $row ? (string)$row['TITLE'] : null;
+				return (string)$row['TITLE'];
 
 			case \CCrmOwnerType::Contact:
-				$row = \CCrmContact::GetListEx(
-					[],
-					['=ID' => $entityId, 'CHECK_PERMISSIONS' => 'N'],
-					false,
-					['nTopCount' => 1],
-					['ID', 'HONORIFIC', 'NAME', 'SECOND_NAME', 'LAST_NAME']
-				)->Fetch();
-				if (!$row)
-				{
-					return null;
-				}
-
 				return (string)\CCrmContact::PrepareFormattedName($row);
 
 			case \CCrmOwnerType::Company:
-				$row = \CCrmCompany::GetListEx(
-					[],
-					['=ID' => $entityId, 'CHECK_PERMISSIONS' => 'N'],
-					false,
-					['nTopCount' => 1],
-					['ID', 'TITLE']
-				)->Fetch();
-
-				return $row ? (string)$row['TITLE'] : null;
+				return (string)$row['TITLE'];
 
 			default:
 				// Фабричные сущности: смарт-счета и смарт-процессы.
@@ -148,13 +128,59 @@ final class DocumentBuilder
 		}
 	}
 
-	private function fetchCrmRow(int $entityTypeId, int $entityId, array $select): ?array
+	/**
+	 * Колонки для выборки полей по типу сущности.
+	 *
+	 * @return string[]|null
+	 */
+	private function fetchCrmRow(int $entityTypeId, int $entityId): ?array
 	{
-		$map = [
+		$selects = [
+			\CCrmOwnerType::Lead => ['ID', 'TITLE', 'NAME', 'SECOND_NAME', 'LAST_NAME', 'COMMENTS', 'SOURCE_DESCRIPTION', 'CATEGORY_ID'],
+			\CCrmOwnerType::Deal => ['ID', 'TITLE', 'COMMENTS', 'ADDITIONAL_INFO', 'CATEGORY_ID'],
+			\CCrmOwnerType::Contact => ['ID', 'HONORIFIC', 'NAME', 'SECOND_NAME', 'LAST_NAME', 'POST', 'COMMENTS', 'CATEGORY_ID'],
+			\CCrmOwnerType::Company => ['ID', 'TITLE', 'COMMENTS', 'CATEGORY_ID'],
+			\CCrmOwnerType::Quote => ['ID', 'TITLE'],
+		];
+
+		$select = $selects[$entityTypeId] ?? null;
+
+		// Фабричные сущности (смарт-счета, смарт-процессы).
+		if ($select === null && \CCrmOwnerType::isUseFactoryBasedApproach($entityTypeId))
+		{
+			$factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($entityTypeId);
+			if (!$factory)
+			{
+				return null;
+			}
+			$item = $factory->getItem($entityId);
+			if (!$item)
+			{
+				return null;
+			}
+
+			$row = ['ID' => $item->getId()];
+			foreach (['TITLE', 'COMMENTS'] as $code)
+			{
+				$row[$code] = (string)($item->get($code) ?? '');
+			}
+
+			return $row;
+		}
+
+		if ($select === null)
+		{
+			return null;
+		}
+
+		$classMap = [
+			\CCrmOwnerType::Lead => '\CCrmLead',
 			\CCrmOwnerType::Deal => '\CCrmDeal',
+			\CCrmOwnerType::Contact => '\CCrmContact',
+			\CCrmOwnerType::Company => '\CCrmCompany',
 			\CCrmOwnerType::Quote => '\CCrmQuote',
 		];
-		$class = $map[$entityTypeId] ?? null;
+		$class = $classMap[$entityTypeId] ?? null;
 		if (!$class || !class_exists($class))
 		{
 			return null;
@@ -169,6 +195,94 @@ final class DocumentBuilder
 		)->Fetch();
 
 		return $row ?: null;
+	}
+
+	/**
+	 * Отдельные поля сущности для объекта fields.<code>.
+	 */
+	private function crmFields(int $entityTypeId, ?array $row): array
+	{
+		if ($row === null)
+		{
+			return [];
+		}
+
+		$fields = [];
+		switch (FieldRegistry::scopeForCrmType($entityTypeId))
+		{
+			case FieldRegistry::SCOPE_CRM_LEAD:
+				$fields['name'] = trim(
+					(string)($row['NAME'] ?? '') . ' ' . (string)($row['SECOND_NAME'] ?? '') . ' ' . (string)($row['LAST_NAME'] ?? '')
+				);
+				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
+				$fields['source'] = (string)($row['SOURCE_DESCRIPTION'] ?? '');
+				break;
+
+			case FieldRegistry::SCOPE_CRM_DEAL:
+				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
+				$fields['additional_info'] = (string)($row['ADDITIONAL_INFO'] ?? '');
+				break;
+
+			case FieldRegistry::SCOPE_CRM_CONTACT:
+				$fields['post'] = (string)($row['POST'] ?? '');
+				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
+				break;
+
+			case FieldRegistry::SCOPE_CRM_COMPANY:
+				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
+				break;
+		}
+
+		return array_filter($fields, static fn ($v) => trim((string)$v) !== '');
+	}
+
+	/**
+	 * Телефоны и email CRM-сущности из множественных полей.
+	 *
+	 * @return array{phones: string[], emails: string[]}
+	 */
+	private function crmPhonesAndEmails(int $entityTypeId, int $entityId): array
+	{
+		$result = ['phones' => [], 'emails' => []];
+		if (!in_array($entityTypeId, [\CCrmOwnerType::Lead, \CCrmOwnerType::Contact, \CCrmOwnerType::Company], true))
+		{
+			return $result;
+		}
+
+		try
+		{
+			$rows = \CCrmFieldMulti::GetListEx(
+				[],
+				[
+					'=ENTITY_ID' => \CCrmOwnerType::ResolveName($entityTypeId),
+					'=ELEMENT_ID' => $entityId,
+					'@TYPE_ID' => ['PHONE', 'EMAIL'],
+				],
+				false,
+				false,
+				['TYPE_ID', 'VALUE']
+			);
+			while ($row = $rows->Fetch())
+			{
+				if ($row['TYPE_ID'] === 'PHONE')
+				{
+					$digits = preg_replace('/\D+/', '', (string)$row['VALUE']) ?? '';
+					if (mb_strlen($digits) >= 5)
+					{
+						$result['phones'][] = $digits;
+					}
+				}
+				else
+				{
+					$result['emails'][] = mb_strtolower((string)$row['VALUE']);
+				}
+			}
+		}
+		catch (\Throwable)
+		{
+		}
+
+		return $result;
 	}
 
 	private function crmEntityTypeName(int $entityTypeId): string
@@ -217,7 +331,8 @@ final class DocumentBuilder
 		$row = \Bitrix\Main\UserTable::getList([
 			'select' => [
 				'ID', 'NAME', 'LAST_NAME', 'SECOND_NAME', 'EMAIL', 'LOGIN',
-				'WORK_POSITION', 'ACTIVE', 'PERSONAL_PHOTO', 'UF_DEPARTMENT',
+				'WORK_POSITION', 'ACTIVE', 'PERSONAL_PHOTO', 'PERSONAL_PHONE',
+				'PERSONAL_MOBILE', 'WORK_PHONE', 'UF_DEPARTMENT',
 			],
 			'filter' => ['=ID' => $userId],
 			'limit' => 1,
@@ -247,7 +362,7 @@ final class DocumentBuilder
 
 		$position = (string)($row['WORK_POSITION'] ?? '');
 		$departmentNames = [];
-		if ($departments !== [] && Loader::includeModule('intranet'))
+		if (Loader::includeModule('intranet'))
 		{
 			$departmentsData = \CIntranetUtils::GetDepartmentsData($departments);
 			if (is_array($departmentsData))
@@ -262,10 +377,22 @@ final class DocumentBuilder
 			}
 		}
 
-		$bodyParts = array_filter(array_merge(
-			[$title, (string)($row['EMAIL'] ?? ''), $position],
-			$departmentNames
-		), static fn ($p) => (string)$p !== '');
+		$phones = [];
+		foreach (['PERSONAL_PHONE', 'PERSONAL_MOBILE', 'WORK_PHONE'] as $column)
+		{
+			$digits = preg_replace('/\D+/', '', (string)($row[$column] ?? '')) ?? '';
+			if (mb_strlen($digits) >= 5)
+			{
+				$phones[] = $digits;
+			}
+		}
+
+		$fields = [
+			'email' => (string)($row['EMAIL'] ?? ''),
+			'position' => $position,
+			'department' => implode(', ', $departmentNames),
+		];
+		$fields = array_filter($fields, static fn ($v) => trim((string)$v) !== '');
 
 		return [
 			'entity_type' => IndexManager::TYPE_USER,
@@ -275,8 +402,8 @@ final class DocumentBuilder
 			'iblock_id' => 0,
 			'title' => $title,
 			'subtitle' => implode(', ', array_filter([$position, implode(', ', $departmentNames)])),
-			'body' => implode(' | ', $bodyParts),
-			'phones' => [],
+			'fields' => $fields,
+			'phones' => array_values(array_unique($phones)),
 			'emails' => array_values(array_filter([mb_strtolower((string)($row['EMAIL'] ?? ''))])),
 			'url' => '/company/personal/user/' . (int)$userId . '/',
 			'attrs' => [
@@ -290,7 +417,7 @@ final class DocumentBuilder
 
 	private function userPhotoUrl(int $fileId): string
 	{
-		if ($fileId <= 0 || !function_exists('CFile::ResizeImageGet'))
+		if ($fileId <= 0)
 		{
 			return '';
 		}
@@ -352,12 +479,16 @@ final class DocumentBuilder
 			$siteDir = (string)$site['DIR'];
 		}
 
-		$bodyParts = array_filter([
-			(string)$row['NAME'],
-			strip_tags((string)($row['PREVIEW_TEXT'] ?? '')),
-			strip_tags((string)($row['DETAIL_TEXT'] ?? '')),
-			(string)($row['TAGS'] ?? ''),
-		], static fn ($p) => $p !== '');
+		$preview = trim(strip_tags((string)($row['PREVIEW_TEXT'] ?? '')));
+		$detail = trim(strip_tags((string)($row['DETAIL_TEXT'] ?? '')));
+		$tags = trim((string)($row['TAGS'] ?? ''));
+
+		$fields = [
+			'preview' => $preview,
+			'detail' => $detail,
+			'tags' => str_replace(',', ' ', $tags),
+		];
+		$fields = array_filter($fields, static fn ($v) => trim((string)$v) !== '');
 
 		return [
 			'entity_type' => IndexManager::TYPE_IBLOCK,
@@ -367,7 +498,7 @@ final class DocumentBuilder
 			'iblock_id' => $iblockId,
 			'title' => (string)$row['NAME'],
 			'subtitle' => (string)$iblock['NAME'],
-			'body' => implode(' | ', $bodyParts),
+			'fields' => $fields,
 			'phones' => [],
 			'emails' => [],
 			'url' => str_replace('#SITE_DIR#', $siteDir, (string)$row['DETAIL_PAGE_URL']),

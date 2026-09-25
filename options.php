@@ -120,7 +120,24 @@ if (
 		}
 		Option::set($moduleId, 'iblocks', implode(',', array_unique($iblockIds)));
 
-		$note = Loc::getMessage('MTAI_OPENSEARCH_SAVED');
+		// Поля поиска: fields_<scope>[] → CSV кодов (для всех скоупов,
+		// чтобы выбор не терялся при выключении сущности).
+		foreach (\Mtai\OpenSearch\FieldRegistry::allScopes() as $scope)
+		{
+			$available = \Mtai\OpenSearch\FieldRegistry::fieldsForScope($scope);
+			$posted = (array)$request->getPost('fields_' . $scope);
+			$codes = [];
+			foreach ($posted as $code)
+			{
+				if (is_string($code) && isset($available[$code]))
+				{
+					$codes[] = $code;
+				}
+			}
+			Option::set($moduleId, 'fields_' . $scope, implode(',', array_unique($codes)));
+		}
+
+		$note = Loc::getMessage('MTAI_OPENSEARCH_SAVED_FIELDS');
 	}
 }
 
@@ -166,9 +183,9 @@ $aTabs = [
 ];
 $tabControl = new CAdminTabControl('tabControl', $aTabs);
 
-	$optionValue = static function (string $name, string $default = '') use ($moduleId): string {
-		return htmlspecialcharsbx(Option::get($moduleId, $name, $default));
-	};
+$optionValue = static function (string $name, string $default = '') use ($moduleId): string {
+	return htmlspecialcharsbx(Option::get($moduleId, $name, $default));
+};
 $checkboxRow = static function (string $name, ?string $label, string $hint = '') use ($moduleId): string {
 	$checked = Option::get($moduleId, $name) === 'Y' ? ' checked' : '';
 	$html = '<tr><td width="40%">'
@@ -180,6 +197,34 @@ $checkboxRow = static function (string $name, ?string $label, string $hint = '')
 	}
 
 	return $html . '</td></tr>';
+};
+
+/**
+ * Группа чекбоксов полей поиска скоупа (fields_<scope>[]).
+ */
+$fieldsRow = static function (string $scope, string $title) use ($moduleId): string {
+	$fields = \Mtai\OpenSearch\FieldRegistry::fieldsForScope($scope);
+	if ($fields === [])
+	{
+		return '';
+	}
+	$selected = \Mtai\OpenSearch\Config::selectedFields($scope);
+
+	$boxes = '';
+	foreach ($fields as $code => [$langKey, $fallback])
+	{
+		$label = Loc::getMessage($langKey) ?: $fallback;
+		$checked = in_array($code, $selected, true) ? ' checked' : '';
+		$boxes .= '<label style="display: inline-block; margin: 0 16px 6px 0; white-space: nowrap;">'
+			. '<input type="checkbox" name="fields_' . $scope . '[]" value="' . $code . '"' . $checked . '> '
+			. htmlspecialcharsbx($label) . '</label>';
+	}
+
+	return '<tr><td colspan="2" style="padding-left: 42px;">'
+		. '<div style="margin-bottom: 4px; color: #4a4a4a;">' . htmlspecialcharsbx($title) . ':</div>'
+		. $boxes
+		. '<br><small>' . Loc::getMessage('MTAI_OPENSEARCH_FIELDS_HINT') . '</small>'
+		. '</td></tr>';
 };
 ?>
 <?php if ($note !== null): ?>
@@ -243,16 +288,23 @@ $checkboxRow = static function (string $name, ?string $label, string $hint = '')
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_CRM') ?></td>
 	</tr>
 	<?= $checkboxRow('entity_lead', Loc::getMessage('MTAI_OPENSEARCH_ENTITY_LEAD')) ?>
+	<?= $fieldsRow('crm_lead', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_LEAD')])) ?>
 	<?= $checkboxRow('entity_deal', Loc::getMessage('MTAI_OPENSEARCH_ENTITY_DEAL')) ?>
+	<?= $fieldsRow('crm_deal', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_DEAL')])) ?>
 	<?= $checkboxRow('entity_contact', Loc::getMessage('MTAI_OPENSEARCH_ENTITY_CONTACT')) ?>
+	<?= $fieldsRow('crm_contact', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_CONTACT')])) ?>
 	<?= $checkboxRow('entity_company', Loc::getMessage('MTAI_OPENSEARCH_ENTITY_COMPANY')) ?>
+	<?= $fieldsRow('crm_company', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_COMPANY')])) ?>
 	<?= $checkboxRow('entity_quote', Loc::getMessage('MTAI_OPENSEARCH_ENTITY_QUOTE')) ?>
+	<?= $fieldsRow('crm_quote', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_QUOTE')])) ?>
 	<?= $checkboxRow('entity_smart_invoice', Loc::getMessage('MTAI_OPENSEARCH_ENTITY_SMART_INVOICE')) ?>
+	<?= $fieldsRow('crm_dynamic', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_SMART_INVOICE')])) ?>
 	<?= $checkboxRow(
 		'entity_dynamic',
 		Loc::getMessage('MTAI_OPENSEARCH_ENTITY_DYNAMIC'),
 		Loc::getMessage('MTAI_OPENSEARCH_ENTITY_DYNAMIC_HINT')
 	) ?>
+	<?= $fieldsRow('crm_dynamic', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_ENTITY_DYNAMIC')])) ?>
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_USERS') ?></td>
 	</tr>
@@ -261,6 +313,7 @@ $checkboxRow = static function (string $name, ?string $label, string $hint = '')
 		Loc::getMessage('MTAI_OPENSEARCH_OPT_SEARCH_USERS'),
 		Loc::getMessage('MTAI_OPENSEARCH_OPT_SEARCH_USERS_HINT')
 	) ?>
+	<?= $fieldsRow('user', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_HEADING_USERS_ONE')])) ?>
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_IBLOCKS') ?></td>
 	</tr>
@@ -281,6 +334,7 @@ $checkboxRow = static function (string $name, ?string $label, string $hint = '')
 			<br><small><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_IBLOCKS_HINT') ?></small>
 		</td>
 	</tr>
+	<?= $fieldsRow('iblock', Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_FIELDS_IBLOCK_ONE')])) ?>
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_LIMITS') ?></td>
 	</tr>
