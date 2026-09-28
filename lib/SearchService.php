@@ -327,7 +327,10 @@ final class SearchService
 					'query' => $query,
 					'type' => 'best_fields',
 					'fields' => $textFields,
-					'operator' => 'or',
+					// До 3 слов — должны совпасть все, дальше — 75%:
+					// иначе запрос из заголовка новости матчит всё
+					// с «отдел»/«корпоративн» по одному совпадению.
+					'minimum_should_match' => '3<75%',
 				],
 			];
 			$should[] = [

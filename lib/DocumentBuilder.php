@@ -650,7 +650,7 @@ final class DocumentBuilder
 			false,
 			['nTopCount' => 1],
 			[
-				'ID', 'IBLOCK_ID', 'NAME', 'TAGS',
+				'ID', 'IBLOCK_ID', 'NAME', 'TAGS', 'CODE', 'IBLOCK_SECTION_ID',
 				'PREVIEW_TEXT', 'DETAIL_TEXT',
 				'DETAIL_PAGE_URL', 'IBLOCK_TYPE_ID',
 			]
@@ -669,6 +669,12 @@ final class DocumentBuilder
 		}
 
 		$siteDir = $this->iblockSiteDir((string)($iblock['LID'] ?? SITE_ID));
+
+		// DETAIL_PAGE_URL из GetList содержит неразвёрнутые плейсхолдеры
+		// (#ELEMENT_ID#, #CODE#, ...) — подставляем штатным механизмом,
+		// иначе ссылка из выдачи не работает.
+		$url = \CIBlock::ReplaceDetailUrl((string)$row['DETAIL_PAGE_URL'], $row, false, 'E');
+		$url = str_replace('#SITE_DIR#', $siteDir, $url);
 
 		$preview = trim(strip_tags((string)($row['PREVIEW_TEXT'] ?? '')));
 		$detail = trim(strip_tags((string)($row['DETAIL_TEXT'] ?? '')));
@@ -697,7 +703,7 @@ final class DocumentBuilder
 			'fields' => $fields,
 			'phones' => [],
 			'emails' => [],
-			'url' => str_replace('#SITE_DIR#', $siteDir, (string)$row['DETAIL_PAGE_URL']),
+			'url' => $url,
 			'attrs' => [
 				'iblockId' => $iblockId,
 				'iblockTitle' => (string)$iblock['NAME'],
