@@ -277,7 +277,20 @@ final class Indexer
 		$bulk = [];
 		foreach ($ids as $id)
 		{
-			$document = $this->buildStepDocument($code, (int)$id);
+			try
+			{
+				$document = $this->buildStepDocument($code, (int)$id);
+			}
+			catch (\Throwable $e)
+			{
+				// Элемент с нестандартной структурой не должен валить шаг —
+				// пропускаем и пишем в лог.
+				AddMessage2Log(
+					'mtai.opensearch reindex: step ' . $code . ' item #' . $id . ' skipped: ' . $e->getMessage(),
+					Config::MODULE_ID
+				);
+				continue;
+			}
 			if ($document !== null)
 			{
 				$docId = IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id']);
@@ -317,6 +330,15 @@ final class Indexer
 			])->fetchAll();
 
 			return array_map(static fn ($r) => (int)$r['ID'], $rows);
+		}
+
+		// Шаги инфоблоков: в ajax-контексте модуль iblock не загружен.
+		if (mb_strpos($code, 'iblock_') === 0)
+		{
+			if (!Loader::includeModule('iblock'))
+			{
+				return [];
+			}
 		}
 
 		if (mb_strpos($code, 'iblock_section_') === 0)

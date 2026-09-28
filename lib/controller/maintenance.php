@@ -7,7 +7,6 @@ use Bitrix\Main\Engine\Controller;
 use Bitrix\Main\Error;
 use Mtai\OpenSearch\IndexManager;
 use Mtai\OpenSearch\Indexer;
-use Mtai\OpenSearch\OpenSearchException;
 
 /**
  * Служебные экшены страницы обслуживания индекса (только админы).
@@ -40,6 +39,14 @@ class Maintenance extends Controller
 		return true;
 	}
 
+	private function fail(\Throwable $e): void
+	{
+		$code = $e instanceof \Mtai\OpenSearch\OpenSearchException
+			? 'OPENSEARCH_UNAVAILABLE'
+			: 'INTERNAL_ERROR';
+		$this->addError(new Error($e->getMessage(), $code));
+	}
+
 	public function statusAction(): ?array
 	{
 		if (!$this->requireAdmin())
@@ -51,9 +58,9 @@ class Maintenance extends Controller
 		{
 			return (new IndexManager())->status();
 		}
-		catch (OpenSearchException $e)
+		catch (\Throwable $e)
 		{
-			$this->addError(new Error($e->getMessage(), 'OPENSEARCH_UNAVAILABLE'));
+			$this->fail($e);
 
 			return null;
 		}
@@ -70,9 +77,9 @@ class Maintenance extends Controller
 		{
 			return ['steps' => (new Indexer())->reindexPlan()];
 		}
-		catch (OpenSearchException $e)
+		catch (\Throwable $e)
 		{
-			$this->addError(new Error($e->getMessage(), 'OPENSEARCH_UNAVAILABLE'));
+			$this->fail($e);
 
 			return null;
 		}
@@ -92,9 +99,9 @@ class Maintenance extends Controller
 		{
 			(new IndexManager())->recreateIndex();
 		}
-		catch (OpenSearchException $e)
+		catch (\Throwable $e)
 		{
-			$this->addError(new Error($e->getMessage(), 'OPENSEARCH_UNAVAILABLE'));
+			$this->fail($e);
 
 			return null;
 		}
@@ -113,9 +120,9 @@ class Maintenance extends Controller
 		{
 			return (new Indexer())->runStep($code, $lastId);
 		}
-		catch (OpenSearchException $e)
+		catch (\Throwable $e)
 		{
-			$this->addError(new Error($e->getMessage(), 'OPENSEARCH_UNAVAILABLE'));
+			$this->fail($e);
 
 			return null;
 		}

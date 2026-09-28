@@ -302,8 +302,18 @@ final class DocumentBuilder
 						return null;
 					}
 					$item = $factory->getItem($entityId);
-
-					return $item ? (string)($item->getTitle() ?? '') : null;
+					if (!$item)
+					{
+						return null;
+					}
+					try
+					{
+						return (string)($item->getTitle() ?? '');
+					}
+					catch (\Throwable)
+					{
+						return '#' . $entityId;
+					}
 				}
 
 				return null;
@@ -344,7 +354,15 @@ final class DocumentBuilder
 			$row = ['ID' => $item->getId()];
 			foreach (['TITLE', 'COMMENTS'] as $code)
 			{
-				$row[$code] = (string)($item->get($code) ?? '');
+				try
+				{
+					$row[$code] = (string)($item->get($code) ?? '');
+				}
+				catch (\Throwable)
+				{
+					// не у всех смарт-процессов есть эти поля
+					$row[$code] = '';
+				}
 			}
 
 			return $row;
