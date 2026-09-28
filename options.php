@@ -55,36 +55,42 @@ $editableOptions = [
 $note = null;
 $error = null;
 
-if (
-	$request->isPost()
-	&& check_bitrix_sessid()
-	&& $POST_RIGHT >= 'W'
-)
-{
-	if ($request->getPost('test_connection') !== null)
+	if (
+		$request->isPost()
+		&& check_bitrix_sessid()
+		&& $POST_RIGHT >= 'W'
+	)
 	{
-		try
+		if ($request->getPost('test_connection') !== null)
 		{
-			$client = new \Mtai\OpenSearch\OpenSearchClient(
-				rtrim((string)$request->getPost('scheme') ?: 'http', '://') . '://'
-				. ((string)$request->getPost('host') ?: 'opensearch') . ':'
-				. ((int)$request->getPost('port') ?: 9200)
-			);
-			$version = $client->version();
-			if ($version === '')
+			try
 			{
-				throw new \RuntimeException('no version in response');
-			}
+				$client = new \Mtai\OpenSearch\OpenSearchClient(
+					rtrim((string)$request->getPost('scheme') ?: 'http', '://') . '://'
+					. ((string)$request->getPost('host') ?: 'opensearch') . ':'
+					. ((int)$request->getPost('port') ?: 9200)
+				);
+				$version = $client->version();
+				if ($version === '')
+				{
+					throw new \RuntimeException('no version in response');
+				}
 
-			$note = str_replace('#VERSION#', $version, Loc::getMessage('MTAI_OPENSEARCH_TEST_OK'));
+				$note = str_replace('#VERSION#', $version, Loc::getMessage('MTAI_OPENSEARCH_TEST_OK'));
+			}
+			catch (\Throwable $e)
+			{
+				$error = str_replace('#ERROR#', $e->getMessage(), Loc::getMessage('MTAI_OPENSEARCH_TEST_FAIL'));
+			}
 		}
-		catch (\Throwable $e)
+		elseif (
+			// Кнопка может называться по-разному: Update (классические
+			// settings-страницы) либо save/apply (кнопки CAdminTabControl).
+			$request->getPost('Update') !== null
+			|| $request->getPost('save') !== null
+			|| $request->getPost('apply') !== null
+		)
 		{
-			$error = str_replace('#ERROR#', $e->getMessage(), Loc::getMessage('MTAI_OPENSEARCH_TEST_FAIL'));
-		}
-	}
-	elseif ($request->getPost('Update') !== null)
-	{
 		foreach ($editableOptions as $name => $type)
 		{
 			if ($type === 'checkbox')
