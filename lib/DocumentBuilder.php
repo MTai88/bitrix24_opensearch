@@ -57,6 +57,11 @@ final class DocumentBuilder
 		$contacts = $this->crmPhonesAndEmails($entityTypeId, $entityId);
 
 		$fields = $this->crmFields($entityTypeId, $row);
+		// UF-поля (индексируем все — область поиска режется запросом).
+		foreach ($this->userFieldValues($this->crmUfEntityName($entityTypeId), $entityId) as $code => $value)
+		{
+			$fields[$code] = $value;
+		}
 		// Штатный поисковый контент кладём в fields.content, а не в общее
 		// поле body: область поиска задаются по скоупам, и контент одного
 		// типа не должен открывать поиск по контенту другого.
@@ -80,6 +85,183 @@ final class DocumentBuilder
 			'attrs' => [],
 			'date_update' => date('c'),
 		];
+	}
+
+	/**
+	 * Имя UF-сущности CRM для чтения пользовательских полей.
+	 */
+	private function crmUfEntityName(int $entityTypeId): string
+	{
+		$map = [
+			\CCrmOwnerType::Lead => 'CRM_LEAD',
+			\CCrmOwnerType::Deal => 'CRM_DEAL',
+			\CCrmOwnerType::Contact => 'CRM_CONTACT',
+			\CCrmOwnerType::Company => 'CRM_COMPANY',
+		];
+
+		return $map[$entityTypeId] ?? ('CRM_' . $entityTypeId);
+	}
+
+	/**
+	 * Значения всех UF-полей сущности в человекочитаемом виде:
+	 * код поля => строка.
+	 *
+	 * @return array<string, string>
+	 */
+	private function userFieldValues(string $ufEntity, int $entityId): array
+	{
+		$result = [];
+		try
+		{
+			$userFields = $GLOBALS['USER_FIELD_MANAGER']->GetUserFields($ufEntity, $entityId, LANGUAGE_ID);
+			foreach ((array)$userFields as $code => $field)
+			{
+				if (!is_array($field) || ($field['VALUE'] ?? null) === null || (string)$field['VALUE'] === '')
+				{
+					continue;
+				}
+				$formatted = $this->formatUserFieldValue($field['VALUE'], $field);
+				if ($formatted !== '')
+				{
+					$result[(string)$code] = $formatted;
+				}
+			}
+		}
+		catch (\Throwable)
+		{
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Приводит значение UF-поля (в т.ч. множественное) к поисковой строке.
+	 */
+	private function formatUserFieldValue($value, array $field): string
+	{
+		$values = (($field['MULTIPLE'] ?? 'N') === 'Y' && is_array($value)) ? $value : [$value];
+
+		$parts = [];
+		foreach ($values as $single)
+		{
+			$formatted = $this->formatSingleUserFieldValue($single, $field);
+			if ($formatted !== '')
+			{
+				$parts[] = $formatted;
+			}
+		}
+
+		return implode(', ', $parts);
+	}
+
+	private function formatSingleUserFieldValue($value, array $field): string
+	{
+		if (!is_scalar($value) && $value !== null)
+		{
+			return '';
+		}
+
+		switch ((string)($field['USER_TYPE_ID'] ?? ''))
+		{
+			case 'boolean':
+				return $value ? 'Да' : 'Нет';
+
+			case 'enumeration':
+				$enum = $this->enumValues((int)($field['ID'] ?? 0));
+
+				return (string)($enum[(int)$value] ?? (string)$value);
+
+			case 'employee':
+				$user = \CUser::GetByID((int)$value)->Fetch();
+				if ($user)
+				{
+					return trim(\CUser::FormatName(\CSite::GetNameFormat(false), $user, true));
+				}
+
+				return '';
+
+			case 'crm':
+				// Формат значений: "<буква типа>_<ID>" (L_12, D_3, C_7, CO_1...).
+				[$prefix, $id] = array_pad(explode('_', (string)$value, 2), 2, null);
+				$typeId = $this->resolveCrmUfPrefix((string)$prefix);
+				if ($typeId > 0 && (int)$id > 0)
+				{
+					try
+					{
+						return (string)\CCrmOwnerType::GetTitle($typeId, (int)$id);
+					}
+					catch (\Throwable)
+					{
+						return (string)$value;
+					}
+				}
+
+				return (string)$value;
+
+			case 'iblock_element':
+				if (Loader::includeModule('iblock'))
+				{
+					$element = \CIBlockElement::GetByID((int)$value)->Fetch();
+
+					return $element ? (string)$element['NAME'] : '';
+				}
+
+				return '';
+
+			case 'iblock_section':
+				if (Loader::includeModule('iblock'))
+				{
+					$section = \CIBlockSection::GetByID((int)$value)->Fetch();
+
+					return $section ? (string)$section['NAME'] : '';
+				}
+
+				return '';
+
+			case 'disk_file':
+			case 'url':
+			default:
+				return trim((string)$value);
+		}
+	}
+
+	/** Кэш значений списков UF-полей: fieldId => [valueId => текст]. */
+	private array $enumCache = [];
+
+	private function enumValues(int $fieldId): array
+	{
+		if ($fieldId <= 0)
+		{
+			return [];
+		}
+		if (!isset($this->enumCache[$fieldId]))
+		{
+			$values = [];
+			$rows = \CUserFieldEnum::GetList([], ['USER_FIELD_ID' => $fieldId]);
+			while ($row = $rows->GetNext())
+			{
+				$values[(int)$row['ID']] = (string)$row['VALUE'];
+			}
+			$this->enumCache[$fieldId] = $values;
+		}
+
+		return $this->enumCache[$fieldId];
+	}
+
+	private function resolveCrmUfPrefix(string $prefix): int
+	{
+		$map = [
+			'L' => \CCrmOwnerType::Lead,
+			'D' => \CCrmOwnerType::Deal,
+			'C' => \CCrmOwnerType::Contact,
+			'CO' => \CCrmOwnerType::Company,
+			'Q' => \CCrmOwnerType::Quote,
+			'I' => \CCrmOwnerType::Invoice,
+			'SI' => \CCrmOwnerType::SmartInvoice,
+			'TM' => \CCrmOwnerType::Activity,
+		];
+
+		return (int)($map[strtoupper($prefix)] ?? 0);
 	}
 
 	/**
@@ -208,9 +390,9 @@ final class DocumentBuilder
 		}
 
 		$fields = [];
-		switch (FieldRegistry::scopeForCrmType($entityTypeId))
+		switch ($entityTypeId)
 		{
-			case FieldRegistry::SCOPE_CRM_LEAD:
+			case \CCrmOwnerType::Lead:
 				$fields['name'] = trim(
 					(string)($row['NAME'] ?? '') . ' ' . (string)($row['SECOND_NAME'] ?? '') . ' ' . (string)($row['LAST_NAME'] ?? '')
 				);
@@ -218,17 +400,17 @@ final class DocumentBuilder
 				$fields['source'] = (string)($row['SOURCE_DESCRIPTION'] ?? '');
 				break;
 
-			case FieldRegistry::SCOPE_CRM_DEAL:
+			case \CCrmOwnerType::Deal:
 				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
 				$fields['additional_info'] = (string)($row['ADDITIONAL_INFO'] ?? '');
 				break;
 
-			case FieldRegistry::SCOPE_CRM_CONTACT:
+			case \CCrmOwnerType::Contact:
 				$fields['post'] = (string)($row['POST'] ?? '');
 				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
 				break;
 
-			case FieldRegistry::SCOPE_CRM_COMPANY:
+			case \CCrmOwnerType::Company:
 				$fields['comments'] = (string)($row['COMMENTS'] ?? '');
 				break;
 		}
@@ -468,16 +650,7 @@ final class DocumentBuilder
 			return null;
 		}
 
-		$siteDir = '/';
-		$site = \Bitrix\Main\SiteTable::getList([
-			'select' => ['DIR'],
-			'filter' => ['=LID' => $iblock['LID'] ?? SITE_ID],
-			'limit' => 1,
-		])->fetch();
-		if ($site && (string)($site['DIR'] ?? '') !== '')
-		{
-			$siteDir = (string)$site['DIR'];
-		}
+		$siteDir = $this->iblockSiteDir((string)($iblock['LID'] ?? SITE_ID));
 
 		$preview = trim(strip_tags((string)($row['PREVIEW_TEXT'] ?? '')));
 		$detail = trim(strip_tags((string)($row['DETAIL_TEXT'] ?? '')));
@@ -488,6 +661,11 @@ final class DocumentBuilder
 			'detail' => $detail,
 			'tags' => str_replace(',', ' ', $tags),
 		];
+		// Свойства элемента: prop_<код свойства> => человекочитаемое значение.
+		foreach ($this->iblockPropertyValues($iblockId, $elementId) as $code => $value)
+		{
+			$fields[$code] = $value;
+		}
 		$fields = array_filter($fields, static fn ($v) => trim((string)$v) !== '');
 
 		return [
@@ -509,5 +687,130 @@ final class DocumentBuilder
 			],
 			'date_update' => date('c'),
 		];
+	}
+
+	/**
+	 * Документ раздела инфоблока (включается чекбоксом у инфоблока).
+	 */
+	public function buildIblockSectionDocument(int $sectionId): ?array
+	{
+		if (!Loader::includeModule('iblock') || $sectionId <= 0)
+		{
+			return null;
+		}
+
+		// CHECK_PERMISSIONS=N: индексация идёт из CLI/агентов без авторизации.
+		$section = \CIBlockSection::GetList(
+			[],
+			['=ID' => $sectionId, 'CHECK_PERMISSIONS' => 'N'],
+			false,
+			['ID', 'IBLOCK_ID', 'NAME', 'DESCRIPTION']
+		)->Fetch();
+		if (!$section)
+		{
+			return null;
+		}
+
+		$iblockId = (int)$section['IBLOCK_ID'];
+		$iblock = \CIBlock::GetArrayByID($iblockId);
+		if (!$iblock)
+		{
+			return null;
+		}
+
+		$fields = [
+			'description' => trim(strip_tags((string)($section['DESCRIPTION'] ?? ''))),
+		];
+		// UF-поля раздела.
+		foreach ($this->userFieldValues('IBLOCK_' . $iblockId . '_SECTION', $sectionId) as $code => $value)
+		{
+			$fields[$code] = $value;
+		}
+		$fields = array_filter($fields, static fn ($v) => trim((string)$v) !== '');
+
+		// Ссылка на раздел по шаблону SECTION_PAGE_URL инфоблока.
+		$url = (string)($iblock['SECTION_PAGE_URL'] ?? '');
+		$url = str_replace(
+			['#SITE_DIR#', '#SECTION_ID#', '#ID#'],
+			[$this->iblockSiteDir((string)($iblock['LID'] ?? SITE_ID)), $sectionId, $sectionId],
+			$url
+		);
+
+		return [
+			'entity_type' => IndexManager::TYPE_IBLOCK_SECTION,
+			'crm_type_id' => 0,
+			'entity_id' => $sectionId,
+			'category_id' => 0,
+			'iblock_id' => $iblockId,
+			'title' => (string)$section['NAME'],
+			'subtitle' => (string)$iblock['NAME'],
+			'fields' => $fields,
+			'phones' => [],
+			'emails' => [],
+			'url' => $url,
+			'attrs' => [
+				'iblockId' => $iblockId,
+				'iblockTitle' => (string)$iblock['NAME'],
+			],
+			'date_update' => date('c'),
+		];
+	}
+
+	private function iblockSiteDir(string $siteId): string
+	{
+		$dir = '/';
+		try
+		{
+			$site = \Bitrix\Main\SiteTable::getList([
+				'select' => ['DIR'],
+				'filter' => ['=LID' => $siteId],
+				'limit' => 1,
+			])->fetch();
+			if ($site && (string)($site['DIR'] ?? '') !== '')
+			{
+				$dir = (string)$site['DIR'];
+			}
+		}
+		catch (\Throwable)
+		{
+		}
+
+		return $dir;
+	}
+
+	/**
+	 * Значения свойств элемента инфоблока: prop_<код> => строка.
+	 *
+	 * @return array<string, string>
+	 */
+	private function iblockPropertyValues(int $iblockId, int $elementId): array
+	{
+		$result = [];
+		try
+		{
+			$rows = \CIBlockElement::GetProperty($iblockId, $elementId, [], []);
+			$collected = [];
+			while ($row = $rows->GetNext())
+			{
+				$code = (string)($row['CODE'] ?: $row['ID']);
+				// Для списков человекочитаемое значение в DISPLAY_VALUE,
+				// для прочих VALUE уже текст (привязки дают ID — ограничение v1).
+				$value = (string)($row['DISPLAY_VALUE'] ?: $row['VALUE']);
+				if (trim($value) === '' || $value === '[]')
+				{
+					continue;
+				}
+				$collected['prop_' . $code][] = $value;
+			}
+			foreach ($collected as $code => $values)
+			{
+				$result[$code] = implode(', ', array_values(array_unique($values)));
+			}
+		}
+		catch (\Throwable)
+		{
+		}
+
+		return $result;
 	}
 }

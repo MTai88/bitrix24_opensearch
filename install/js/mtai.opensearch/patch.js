@@ -222,10 +222,12 @@
 			var item = data.items[i];
 			if (item && item.type === 'USER') {
 				users.push(item);
-			} else if (item && item.type === 'IBLOCK_ELEMENT') {
-				var title = (item.attributes && item.attributes.iblockTitle)
+			} else if (item && (item.type === 'IBLOCK_ELEMENT' || item.type === 'IBLOCK_SECTION')) {
+				var isSection = item.type === 'IBLOCK_SECTION';
+				var blockTitle = (item.attributes && item.attributes.iblockTitle)
 					? String(item.attributes.iblockTitle)
 					: msg('MTAI_OPENSEARCH_IBLOCKS', 'Инфоблоки');
+				var title = (isSection ? (msg('MTAI_OPENSEARCH_SECTION_PREFIX', 'Раздел') + ' · ') : '') + blockTitle;
 				if (!iblocks[title]) {
 					iblocks[title] = [];
 				}

@@ -16,6 +16,7 @@ final class IndexManager
 	public const TYPE_CRM_PREFIX = 'crm_';
 	public const TYPE_USER = 'user';
 	public const TYPE_IBLOCK = 'iblock';
+	public const TYPE_IBLOCK_SECTION = 'iblock_section';
 
 	private OpenSearchClient $client;
 

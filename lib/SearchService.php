@@ -3,8 +3,11 @@
 namespace Mtai\OpenSearch;
 
 use Bitrix\Main\Loader;
+use Bitrix\Main\Localization\Loc;
 use Bitrix\Main\Search\ResultItem;
 use Bitrix\Main\Web\Uri;
+
+Loc::loadMessages(__FILE__);
 
 /**
  * Поиск по OpenSearch и приведение результатов к контракту
@@ -61,6 +64,10 @@ final class SearchService
 		if ((array)$iblockIds !== [])
 		{
 			$entityTypes[] = IndexManager::TYPE_IBLOCK;
+			if (Config::anyIblockSectionsEnabled())
+			{
+				$entityTypes[] = IndexManager::TYPE_IBLOCK_SECTION;
+			}
 		}
 		$entityTypes = array_values(array_unique($entityTypes));
 		if ($entityTypes === [])
@@ -116,7 +123,20 @@ final class SearchService
 			{
 				foreach ($sources as $source)
 				{
-					$item = $this->formatIblockItem($source, $userId);
+					$item = $this->formatIblockItem($source, $userId, 'element_read');
+					if ($item !== null)
+					{
+						$items[] = $item;
+					}
+				}
+				continue;
+			}
+
+			if ($type === IndexManager::TYPE_IBLOCK_SECTION)
+			{
+				foreach ($sources as $source)
+				{
+					$item = $this->formatIblockItem($source, $userId, 'section_read');
 					if ($item !== null)
 					{
 						$items[] = $item;
@@ -135,10 +155,10 @@ final class SearchService
 	}
 
 	/**
-	 * Тело поискового запроса: для каждого скоупа (лиды, сделки, ...)
-	 * строится своя ветка bool со своим фильтром типов и ONLY выбранными
-	 * полями этого скоупа — выбор полей одной сущности не открывает
-	 * поиск по полям другой.
+	 * Тело поискового запроса: для каждого скоупа (лиды, смарт-процесс #N,
+	 * инфоблок #M...) строится своя ветка bool со своим фильтром типов
+	 * и ONLY выбранными полями этого скоупа — выбор полей одной сущности
+	 * не открывает поиск по полям другой.
 	 */
 	private function buildQuery(string $query, array $entityTypes, array $iblockIds, ?int $categoryId): array
 	{
@@ -151,7 +171,7 @@ final class SearchService
 			$filter[] = [
 				'bool' => [
 					'should' => [
-						['bool' => ['must_not' => [['term' => ['entity_type' => IndexManager::TYPE_IBLOCK]]]]],
+						['bool' => ['must_not' => [['terms' => ['entity_type' => [IndexManager::TYPE_IBLOCK, IndexManager::TYPE_IBLOCK_SECTION]]]]]],
 						['terms' => ['iblock_id' => $iblockIds]],
 					],
 					'minimum_should_match' => 1,
@@ -163,17 +183,10 @@ final class SearchService
 			$filter[] = ['term' => ['category_id' => $categoryId]];
 		}
 
-		$typeCodesByScope = $this->entityTypeCodesByScope();
-
 		$scopeShoulds = [];
-		foreach ($this->searchedScopes() as $scope)
+		foreach ($this->scopeSpecs() as $spec)
 		{
-			$scopeTypes = $typeCodesByScope[$scope] ?? [];
-			if ($scopeTypes === [])
-			{
-				continue;
-			}
-			$scopeQuery = $this->buildScopeQuery($scope, $query, $scopeTypes);
+			$scopeQuery = $this->buildScopeQuery($query, $spec['types'], $spec['fields']);
 			if ($scopeQuery !== null)
 			{
 				$scopeShoulds[] = $scopeQuery;
@@ -203,18 +216,84 @@ final class SearchService
 	}
 
 	/**
+	 * Спецификации скоупов текущего поиска: entity-коды индекса + поля.
+	 *
+	 * @return array<int, array{types: string[], fields: string[]}>
+	 */
+	private function scopeSpecs(): array
+	{
+		$specs = [];
+
+		foreach (FieldRegistry::CRM_SCOPES as $scope)
+		{
+			if (Config::crmScopeEnabled($scope))
+			{
+				$typeIds = Config::allowedCrmEntityTypeIds();
+				$map = [
+					'crm_lead' => \CCrmOwnerType::Lead,
+					'crm_deal' => \CCrmOwnerType::Deal,
+					'crm_contact' => \CCrmOwnerType::Contact,
+					'crm_company' => \CCrmOwnerType::Company,
+				];
+				$typeId = $map[$scope];
+				if (in_array($typeId, $typeIds, true))
+				{
+					$specs[] = [
+						'types' => [DocumentBuilder::crmEntityTypeCode($typeId)],
+						'fields' => Config::crmScopeFields($scope),
+					];
+				}
+			}
+		}
+
+		foreach (Config::smartScopes() as $typeId => $fields)
+		{
+			$specs[] = [
+				'types' => [DocumentBuilder::crmEntityTypeCode((int)$typeId)],
+				'fields' => $fields,
+			];
+		}
+
+		if (Config::searchUsersEnabled())
+		{
+			$specs[] = [
+				'types' => [IndexManager::TYPE_USER],
+				'fields' => Config::userScopeFields(),
+			];
+		}
+
+		foreach (Config::iblockScopes() as $iblockId => $config)
+		{
+			$specs[] = [
+				'types' => [IndexManager::TYPE_IBLOCK],
+				'fields' => array_values(array_merge($config['fields'], $config['properties'])),
+			];
+			if ($config['sections']['enabled'])
+			{
+				$specs[] = [
+					'types' => [IndexManager::TYPE_IBLOCK_SECTION],
+					'fields' => $config['sections']['fields'],
+				];
+			}
+		}
+
+		return $specs;
+	}
+
+	/**
 	 * Ветка запроса одного скоупа: фильтр по его типам + поиск по его
 	 * выбранным полям (текст/телефон/email). null — полей нет.
 	 *
 	 * @param string[] $scopeTypes
+	 * @param string[] $scopeFields
 	 */
-	private function buildScopeQuery(string $scope, string $query, array $scopeTypes): ?array
+	private function buildScopeQuery(string $query, array $scopeTypes, array $scopeFields): ?array
 	{
 		$textFields = [];
 		$withPhones = false;
 		$withEmails = false;
 
-		foreach (Config::selectedFields($scope) as $code)
+		foreach ($scopeFields as $code)
 		{
 			switch ($code)
 			{
@@ -290,41 +369,6 @@ final class SearchService
 				'minimum_should_match' => 1,
 			],
 		];
-	}
-
-	/**
-	 * Скоупы, участвующие в текущем поиске.
-	 *
-	 * @return string[]
-	 */
-	private function searchedScopes(): array
-	{
-		return FieldRegistry::activeScopes();
-	}
-
-	/**
-	 * Коды entity_type индекса по скоупам — для ограничивающих фильтров
-	 * общих полей (phones/emails).
-	 *
-	 * @return array<string, string[]>
-	 */
-	private function entityTypeCodesByScope(): array
-	{
-		$result = [];
-		foreach (Config::allowedCrmEntityTypeIds() as $typeId)
-		{
-			$result[FieldRegistry::scopeForCrmType($typeId)][] = DocumentBuilder::crmEntityTypeCode($typeId);
-		}
-		if (Config::searchUsersEnabled())
-		{
-			$result[FieldRegistry::SCOPE_USER][] = IndexManager::TYPE_USER;
-		}
-		if (Config::iblockIds() !== [])
-		{
-			$result[FieldRegistry::SCOPE_IBLOCK][] = IndexManager::TYPE_IBLOCK;
-		}
-
-		return $result;
 	}
 
 	/**
@@ -438,10 +482,11 @@ final class SearchService
 		return $item;
 	}
 
-	private function formatIblockItem(array $source, int $userId): ?ResultItem
+	private function formatIblockItem(array $source, int $userId, string $permission): ?ResultItem
 	{
 		$elementId = (int)($source['entity_id'] ?? 0);
 		$iblockId = (int)($source['iblock_id'] ?? 0);
+		$isSection = ($source['entity_type'] ?? '') === IndexManager::TYPE_IBLOCK_SECTION;
 		if ($elementId <= 0 || $iblockId <= 0)
 		{
 			return null;
@@ -449,17 +494,17 @@ final class SearchService
 		// У части инфоблоков (например, CRM-каталог) DETAIL_PAGE_URL пуст —
 		// элемент всё равно показываем, ссылка-заглушка.
 		$url = (string)($source['url'] ?? '');
-		if ($url === '')
+		if ($url === '' || mb_strpos($url, '#') !== false)
 		{
 			$url = '#';
 		}
 
-		// Право чтения элемента проверяем по правам инфоблока.
+		// Право чтения (элемент/раздел) проверяем по правам инфоблока.
 		if (Loader::includeModule('iblock'))
 		{
 			global $USER;
 			$isAdmin = isset($USER) && $USER instanceof \CUser && $USER->IsAdmin();
-			if (!$isAdmin && !\CIBlockRights::UserHasRightTo($iblockId, $elementId, 'element_read'))
+			if (!$isAdmin && !\CIBlockRights::UserHasRightTo($iblockId, $elementId, $permission))
 			{
 				return null;
 			}
@@ -469,9 +514,10 @@ final class SearchService
 
 		$item = new ResultItem((string)($source['title'] ?? ''), new Uri($url));
 		$item->setId($elementId);
-		$item->setType('IBLOCK_ELEMENT');
+		$item->setType($isSection ? 'IBLOCK_SECTION' : 'IBLOCK_ELEMENT');
 		$item->setModule('iblock');
-		$item->setSubTitle((string)($source['subtitle'] ?? ''));
+		$item->setSubTitle(($isSection ? Loc::getMessage('MTAI_OPENSEARCH_SECTION_SUBTITLE') . ': ' : '')
+			. (string)($source['subtitle'] ?? ''));
 		if ((string)($attrs['iblockId'] ?? '') !== '')
 		{
 			$item->setAttribute('iblockId', (int)$attrs['iblockId']);

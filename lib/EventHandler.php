@@ -22,7 +22,6 @@ final class EventHandler
 		'Deal' => \CCrmOwnerType::Deal,
 		'Contact' => \CCrmOwnerType::Contact,
 		'Company' => \CCrmOwnerType::Company,
-		'Quote' => \CCrmOwnerType::Quote,
 	];
 
 	/**
@@ -59,6 +58,9 @@ final class EventHandler
 			);
 			$manager->registerEventHandlerCompatible(
 				'iblock', 'OnAfterIBlockElement' . $action, $module, $class, 'onIblockElement' . $action
+			);
+			$manager->registerEventHandlerCompatible(
+				'iblock', 'OnAfterIBlockSection' . $action, $module, $class, 'onIblockSection' . $action
 			);
 		}
 
@@ -111,6 +113,9 @@ final class EventHandler
 			$manager->unRegisterEventHandler(
 				'iblock', 'OnAfterIBlockElement' . $action, $module, $class, 'onIblockElement' . $action
 			);
+			$manager->unRegisterEventHandler(
+				'iblock', 'OnAfterIBlockSection' . $action, $module, $class, 'onIblockSection' . $action
+			);
 		}
 
 		$manager->unRegisterEventHandler(
@@ -143,10 +148,6 @@ final class EventHandler
 	public static function onCrmCompanyAdd(&$f): void { self::crmIndex(\CCrmOwnerType::Company, $f); }
 	public static function onCrmCompanyUpdate(&$f): void { self::crmIndex(\CCrmOwnerType::Company, $f); }
 	public static function onCrmCompanyDelete(&$f): void { self::crmDelete(\CCrmOwnerType::Company, $f); }
-
-	public static function onCrmQuoteAdd(&$f): void { self::crmIndex(\CCrmOwnerType::Quote, $f); }
-	public static function onCrmQuoteUpdate(&$f): void { self::crmIndex(\CCrmOwnerType::Quote, $f); }
-	public static function onCrmQuoteDelete(&$f): void { self::crmDelete(\CCrmOwnerType::Quote, $f); }
 
 	private static function crmIndex(int $typeId, $fields): void
 	{
@@ -233,6 +234,39 @@ final class EventHandler
 		try
 		{
 			(new Indexer())->deleteIblockElement((int)$elementId);
+		}
+		catch (\Throwable $e)
+		{
+			self::log($e);
+		}
+	}
+
+	public static function onIblockSectionAdd(&$fields): void { self::iblockSectionIndex($fields); }
+	public static function onIblockSectionUpdate(&$fields): void { self::iblockSectionIndex($fields); }
+
+	public static function onIblockSectionDelete($sectionId): void
+	{
+		try
+		{
+			(new Indexer())->deleteIblockSection((int)$sectionId);
+		}
+		catch (\Throwable $e)
+		{
+			self::log($e);
+		}
+	}
+
+	private static function iblockSectionIndex($fields): void
+	{
+		$id = is_array($fields) ? (int)($fields['ID'] ?? 0) : (int)$fields;
+		if ($id <= 0)
+		{
+			return;
+		}
+
+		try
+		{
+			(new Indexer())->indexIblockSection($id);
 		}
 		catch (\Throwable $e)
 		{

@@ -7,12 +7,15 @@ use Bitrix\Main\Loader;
 
 /**
  * Типизированный доступ к опциям модуля с кешированием на запрос.
+ *
+ * Область поиска хранится опцией scopes (JSON), см. FieldRegistry.
  */
 final class Config
 {
 	public const MODULE_ID = 'mtai.opensearch';
 
 	private static ?array $options = null;
+	private static ?array $scopes = null;
 
 	private static function load(): array
 	{
@@ -82,11 +85,197 @@ final class Config
 		return $name !== '' ? $name : 'bitrix24_morpho';
 	}
 
-	// --- Область поиска ---
+	// ------------------------------------------------------------------
+	// Область поиска (опция scopes, JSON)
+	// ------------------------------------------------------------------
 
 	/**
-	 * Разрешённые для поиска/индексации ID типов CRM (CCrmOwnerType::*)
-	 * согласно настройкам модуля.
+	 * Конфигурация скоупов поиска. Формат — см. FieldRegistry.
+	 * При отсутствии опции — значения по умолчанию: классические
+	 * CRM-сущности и пользователи со всеми системными полями.
+	 */
+	public static function scopes(): array
+	{
+		if (self::$scopes !== null)
+		{
+			return self::$scopes;
+		}
+
+		$raw = self::get('scopes');
+		$scopes = [];
+		if (trim($raw) !== '')
+		{
+			try
+			{
+				$decoded = \Bitrix\Main\Web\Json::decode($raw);
+				if (is_array($decoded))
+				{
+					$scopes = $decoded;
+				}
+			}
+			catch (\Throwable)
+			{
+			}
+		}
+
+		if ($scopes === [])
+		{
+			foreach (FieldRegistry::CRM_SCOPES as $scope)
+			{
+				$scopes[$scope] = [
+					'enabled' => true,
+					'fields' => array_keys(FieldRegistry::systemFields($scope)),
+				];
+			}
+			$scopes['smart'] = [];
+			$scopes['user'] = [
+				'enabled' => true,
+				'fields' => array_keys(FieldRegistry::systemFields('user')),
+			];
+			$scopes['iblock'] = [];
+		}
+
+		return self::$scopes = $scopes;
+	}
+
+	private static function scopeConfig(string $scope): array
+	{
+		$scopes = self::scopes();
+
+		return is_array($scopes[$scope] ?? null) ? $scopes[$scope] : [];
+	}
+
+	private static function scopeFields(string $scope): array
+	{
+		$fields = self::scopeConfig($scope)['fields'] ?? [];
+
+		return is_array($fields) ? array_values($fields) : [];
+	}
+
+	/**
+	 * CRM-классика включена?
+	 */
+	public static function crmScopeEnabled(string $scope): bool
+	{
+		return (bool)(self::scopeConfig($scope)['enabled'] ?? false);
+	}
+
+	/**
+	 * Выбранные поля CRM-классики (системные + UF_).
+	 *
+	 * @return string[]
+	 */
+	public static function crmScopeFields(string $scope): array
+	{
+		return self::scopeFields($scope);
+	}
+
+	/**
+	 * Выбранные смарт-процессы: typeId => поля.
+	 *
+	 * @return array<int, string[]>
+	 */
+	public static function smartScopes(): array
+	{
+		$smart = self::scopes()['smart'] ?? [];
+		$result = [];
+		if (is_array($smart))
+		{
+			foreach ($smart as $typeId => $config)
+			{
+				$fields = is_array($config['fields'] ?? null) ? $config['fields'] : [];
+				$result[(int)$typeId] = array_values($fields);
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Пользователи включены?
+	 */
+	public static function searchUsersEnabled(): bool
+	{
+		return (bool)(self::scopeConfig('user')['enabled'] ?? false);
+	}
+
+	/**
+	 * Выбранные поля пользователей.
+	 *
+	 * @return string[]
+	 */
+	public static function userScopeFields(): array
+	{
+		return self::scopeFields('user');
+	}
+
+	/**
+	 * Настройки инфоблоков: iblockId => {
+	 *   fields: string[], properties: string[],
+	 *   sections: {enabled: bool, fields: string[]}
+	 * }.
+	 *
+	 * @return array<int, array>
+	 */
+	public static function iblockScopes(): array
+	{
+		$iblocks = self::scopes()['iblock'] ?? [];
+		$result = [];
+		if (is_array($iblocks))
+		{
+			foreach ($iblocks as $iblockId => $config)
+			{
+				if (!is_array($config))
+				{
+					continue;
+				}
+				$sections = is_array($config['sections'] ?? null) ? $config['sections'] : [];
+				$result[(int)$iblockId] = [
+					'fields' => is_array($config['fields'] ?? null) ? array_values($config['fields']) : [],
+					'properties' => is_array($config['properties'] ?? null) ? array_values($config['properties']) : [],
+					'sections' => [
+						'enabled' => (bool)($sections['enabled'] ?? false),
+						'fields' => is_array($sections['fields'] ?? null) ? array_values($sections['fields']) : [],
+					],
+				];
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * ID инфоблоков, участвующих в поиске.
+	 *
+	 * @return int[]
+	 */
+	public static function iblockIds(): array
+	{
+		return array_keys(self::iblockScopes());
+	}
+
+	/**
+	 * У выбранных инфоблоков включён поиск по разделам?
+	 */
+	public static function anyIblockSectionsEnabled(): bool
+	{
+		foreach (self::iblockScopes() as $config)
+		{
+			if ($config['sections']['enabled'])
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	// ------------------------------------------------------------------
+	// Сводные данные для индексатора и поиска
+	// ------------------------------------------------------------------
+
+	/**
+	 * Разрешённые для индексации ID типов CRM (классика + смарты).
 	 *
 	 * @return int[]
 	 */
@@ -98,82 +287,27 @@ final class Config
 		}
 
 		$map = [
-			'entity_lead' => \CCrmOwnerType::Lead,
-			'entity_deal' => \CCrmOwnerType::Deal,
-			'entity_contact' => \CCrmOwnerType::Contact,
-			'entity_company' => \CCrmOwnerType::Company,
-			'entity_quote' => \CCrmOwnerType::Quote,
-			'entity_smart_invoice' => \CCrmOwnerType::SmartInvoice,
+			'crm_lead' => \CCrmOwnerType::Lead,
+			'crm_deal' => \CCrmOwnerType::Deal,
+			'crm_contact' => \CCrmOwnerType::Contact,
+			'crm_company' => \CCrmOwnerType::Company,
 		];
 
 		$typeIds = [];
-		foreach ($map as $option => $typeId)
+		foreach ($map as $scope => $typeId)
 		{
-			if (self::getBool($option))
+			if (self::crmScopeEnabled($scope))
 			{
-				$typeIds[] = (int)$typeId;
+				$typeIds[] = $typeId;
 			}
 		}
 
-		if (self::getBool('entity_dynamic'))
+		foreach (array_keys(self::smartScopes()) as $typeId)
 		{
-			foreach (self::dynamicEntityTypeIds() as $typeId)
-			{
-				$typeIds[] = (int)$typeId;
-			}
+			$typeIds[] = (int)$typeId;
 		}
 
 		return array_values(array_unique($typeIds));
-	}
-
-	/**
-	 * ID всех динамических типов CRM (смарт-процессы).
-	 *
-	 * @return int[]
-	 */
-	public static function dynamicEntityTypeIds(): array
-	{
-		if (!Loader::includeModule('crm'))
-		{
-			return [];
-		}
-
-		$typeIds = [];
-		$typesMap = \Bitrix\Crm\Service\Container::getInstance()
-			->getDynamicTypesMap()
-			->load(['isLoadStages' => false, 'isLoadCategories' => false]);
-
-		foreach ($typesMap->getTypes() as $type)
-		{
-			$typeIds[] = (int)$type->getEntityTypeId();
-		}
-
-		return $typeIds;
-	}
-
-	public static function searchUsersEnabled(): bool
-	{
-		return self::getBool('search_users');
-	}
-
-	/**
-	 * ID инфоблоков из настроек.
-	 *
-	 * @return int[]
-	 */
-	public static function iblockIds(): array
-	{
-		$raw = self::get('iblocks');
-		$ids = [];
-		foreach (preg_split('/[\s,;]+/u', $raw) ?: [] as $part)
-		{
-			if (is_numeric($part))
-			{
-				$ids[] = (int)$part;
-			}
-		}
-
-		return array_values(array_unique($ids));
 	}
 
 	public static function searchLimit(): int
@@ -199,41 +333,5 @@ final class Config
 	public static function replaceNativeSearch(): bool
 	{
 		return self::getBool('replace_native_search');
-	}
-
-	/**
-	 * Выбранные для поиска поля скоупа.
-	 *
-	 * Опция ни разу не сохранялась (null) — все поля скоупа.
-	 * Сохранённый пустой список — сущность не участвует в поиске.
-	 *
-	 * @return string[]
-	 */
-	public static function selectedFields(string $scope): array
-	{
-		$available = FieldRegistry::fieldsForScope($scope);
-		try
-		{
-			$stored = Option::get(self::MODULE_ID, FieldRegistry::optionKey($scope), null);
-		}
-		catch (\Throwable)
-		{
-			$stored = null;
-		}
-		if ($stored === null)
-		{
-			return array_keys($available);
-		}
-
-		$selected = [];
-		foreach (preg_split('/[\s,;]+/u', (string)$stored) ?: [] as $code)
-		{
-			if (isset($available[$code]))
-			{
-				$selected[] = $code;
-			}
-		}
-
-		return $selected;
 	}
 }

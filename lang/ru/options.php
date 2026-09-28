@@ -30,17 +30,18 @@ $MESS['MTAI_OPENSEARCH_ENTITY_LEAD'] = 'Лиды';
 $MESS['MTAI_OPENSEARCH_ENTITY_DEAL'] = 'Сделки';
 $MESS['MTAI_OPENSEARCH_ENTITY_CONTACT'] = 'Контакты';
 $MESS['MTAI_OPENSEARCH_ENTITY_COMPANY'] = 'Компании';
-$MESS['MTAI_OPENSEARCH_ENTITY_QUOTE'] = 'Квоты';
-$MESS['MTAI_OPENSEARCH_ENTITY_SMART_INVOICE'] = 'Смарт-счета';
-$MESS['MTAI_OPENSEARCH_ENTITY_DYNAMIC'] = 'Смарт-процессы (динамические типы)';
-$MESS['MTAI_OPENSEARCH_ENTITY_DYNAMIC_HINT'] = 'Индексируются все созданные смарт-процессы. Изменения подхватываются агентом синхронизации и полным переиндексом.';
+$MESS['MTAI_OPENSEARCH_HEADING_SMART'] = 'Смарт-процессы';
+$MESS['MTAI_OPENSEARCH_OPT_SMART_TYPES'] = 'Искать в смарт-процессах';
+$MESS['MTAI_OPENSEARCH_OPT_SMART_TYPES_HINT'] = 'Ctrl/Shift — множественный выбор. Для каждого выбранного процесса настраиваются свои поля.';
 
 // Поля поиска
 $MESS['MTAI_OPENSEARCH_FIELDS_FOR'] = 'Поля поиска: #ENTITY#';
-$MESS['MTAI_OPENSEARCH_FIELDS_HINT'] = 'Идёт поиск только по отмеченным полям. Если не отмечено ни одного — сущность не участвует в поиске. Изменение набора полей не требует переиндексации.';
+$MESS['MTAI_OPENSEARCH_FIELDS_HINT'] = 'Идёт поиск только по выбранным полям (Ctrl/Shift — множественный выбор). Поля [UF] — пользовательские поля сущности. Изменение набора полей не требует переиндексации.';
 $MESS['MTAI_OPENSEARCH_FIELD_TITLE'] = 'Заголовок сущности';
 $MESS['MTAI_OPENSEARCH_FIELD_USER_TITLE'] = 'ФИО сотрудника';
 $MESS['MTAI_OPENSEARCH_FIELD_IBLOCK_TITLE'] = 'Название элемента';
+$MESS['MTAI_OPENSEARCH_FIELD_SECTION_TITLE'] = 'Название раздела';
+$MESS['MTAI_OPENSEARCH_FIELD_SECTION_DESCRIPTION'] = 'Описание раздела';
 $MESS['MTAI_OPENSEARCH_FIELD_NAME'] = 'ФИО контакта лида';
 $MESS['MTAI_OPENSEARCH_FIELD_COMMENTS'] = 'Комментарий';
 $MESS['MTAI_OPENSEARCH_FIELD_SOURCE'] = 'Описание источника';
@@ -53,8 +54,10 @@ $MESS['MTAI_OPENSEARCH_FIELD_DEPARTMENT'] = 'Отдел';
 $MESS['MTAI_OPENSEARCH_FIELD_PREVIEW'] = 'Анонс (превью-текст)';
 $MESS['MTAI_OPENSEARCH_FIELD_DETAIL'] = 'Подробное описание';
 $MESS['MTAI_OPENSEARCH_FIELD_TAGS'] = 'Теги';
+$MESS['MTAI_OPENSEARCH_SECTION_SUBTITLE'] = 'Раздел';
 $MESS['MTAI_OPENSEARCH_HEADING_USERS_ONE'] = 'Пользователи';
-$MESS['MTAI_OPENSEARCH_FIELDS_IBLOCK_ONE'] = 'Элементы инфоблоков';
+$MESS['MTAI_OPENSEARCH_FIELDS_IBLOCK_ONE'] = 'Элементы инфоблока';
+$MESS['MTAI_OPENSEARCH_FIELDS_SECTION_ONE'] = 'Разделы инфоблока';
 $MESS['MTAI_OPENSEARCH_SAVED_FIELDS'] = 'Настройки сохранены. Область и поля поиска применяются сразу, переиндексация не требуется.';
 $MESS['MTAI_OPENSEARCH_HEADING_USERS'] = 'Пользователи';
 $MESS['MTAI_OPENSEARCH_OPT_SEARCH_USERS'] = 'Искать сотрудников портала';
@@ -72,3 +75,5 @@ $MESS['MTAI_OPENSEARCH_OPT_CANDIDATE_FACTOR_HINT'] = 'Во сколько раз
 $MESS['MTAI_OPENSEARCH_OPT_BATCH_SIZE'] = 'Размер батча';
 $MESS['MTAI_OPENSEARCH_OPT_BATCH_SIZE_HINT'] = 'Сколько элементов индексировать за один шаг переиндексации (5–500).';
 $MESS['MTAI_OPENSEARCH_MAINTENANCE_HINT'] = 'Полный переиндекс и статус индекса — на странице <a href="mtai_opensearch.php?lang=' . LANGUAGE_ID . '">Обслуживание индекса OpenSearch</a>.';
+
+$MESS['MTAI_OPENSEARCH_OPT_SEARCH_SECTIONS'] = 'Искать по разделам этого инфоблока';

@@ -114,6 +114,33 @@ final class Indexer
 		);
 	}
 
+	public function indexIblockSection(int $sectionId): bool
+	{
+		$document = $this->builder->buildIblockSectionDocument($sectionId);
+		if ($document === null)
+		{
+			return $this->deleteIblockSection($sectionId);
+		}
+
+		$iblockId = (int)$document['iblock_id'];
+		$scopes = Config::iblockScopes();
+		if (!isset($scopes[$iblockId]) || !$scopes[$iblockId]['sections']['enabled'])
+		{
+			// Разделы этого инфоблока не индексируются.
+			return $this->deleteIblockSection($sectionId);
+		}
+
+		return $this->indexDocument($document);
+	}
+
+	public function deleteIblockSection(int $sectionId): bool
+	{
+		return $this->indexManager->client()->deleteDocument(
+			IndexManager::indexName(),
+			IndexManager::documentId(IndexManager::TYPE_IBLOCK_SECTION, $sectionId)
+		);
+	}
+
 	// ------------------------------------------------------------------
 	// Полный переиндекс по шагам
 	// ------------------------------------------------------------------
@@ -127,18 +154,20 @@ final class Indexer
 	public function reindexPlan(): array
 	{
 		$steps = [];
-		$allowed = Config::allowedCrmEntityTypeIds();
 
-		$classics = [
-			\CCrmOwnerType::Lead => ['lead', 'Лиды', '\Bitrix\Crm\LeadTable'],
-			\CCrmOwnerType::Deal => ['deal', 'Сделки', '\Bitrix\Crm\DealTable'],
-			\CCrmOwnerType::Contact => ['contact', 'Контакты', '\Bitrix\Crm\ContactTable'],
-			\CCrmOwnerType::Company => ['company', 'Компании', '\Bitrix\Crm\CompanyTable'],
-			\CCrmOwnerType::Quote => ['quote', 'Квоты', '\Bitrix\Crm\QuoteTable'],
-		];
-		foreach ($classics as $typeId => [$code, $title, $tableClass])
+		$classics = [];
+		if (Loader::includeModule('crm'))
 		{
-			if (!in_array($typeId, $allowed, true))
+			$classics = [
+				'crm_lead' => ['Лиды', '\Bitrix\Crm\LeadTable'],
+				'crm_deal' => ['Сделки', '\Bitrix\Crm\DealTable'],
+				'crm_contact' => ['Контакты', '\Bitrix\Crm\ContactTable'],
+				'crm_company' => ['Компании', '\Bitrix\Crm\CompanyTable'],
+			];
+		}
+		foreach ($classics as $code => [$title, $tableClass])
+		{
+			if (!Config::crmScopeEnabled($code))
 			{
 				continue;
 			}
@@ -153,23 +182,17 @@ final class Indexer
 				{
 				}
 			}
-			$steps[] = ['code' => 'crm_' . $code, 'title' => 'CRM: ' . $title, 'total' => $total];
+			$steps[] = ['code' => $code, 'title' => 'CRM: ' . $title, 'total' => $total];
 		}
 
-		if (in_array(\CCrmOwnerType::SmartInvoice, $allowed, true))
+		// Смарт-процессы и смарт-счета — только выбранные в настройках.
+		$smartTitles = FieldRegistry::smartTypes();
+		foreach (array_keys(Config::smartScopes()) as $typeId)
 		{
-			$steps[] = ['code' => 'crm_smart_invoice', 'title' => 'CRM: Смарт-счета', 'total' => null];
-		}
-
-		foreach (Config::dynamicEntityTypeIds() as $typeId)
-		{
-			if (!in_array($typeId, $allowed, true))
-			{
-				continue;
-			}
+			$title = $smartTitles[(int)$typeId] ?? ('#' . $typeId);
 			$steps[] = [
-				'code' => 'crm_dynamic_' . $typeId,
-				'title' => 'CRM: смарт-процесс #' . $typeId,
+				'code' => 'crm_smart_' . $typeId,
+				'title' => 'CRM: смарт-процесс ' . $title,
 				'total' => null,
 			];
 		}
@@ -189,13 +212,15 @@ final class Indexer
 
 		if (Loader::includeModule('iblock'))
 		{
-			foreach (Config::iblockIds() as $iblockId)
+			foreach (Config::iblockScopes() as $iblockId => $config)
 			{
 				$iblock = \CIBlock::GetArrayByID($iblockId);
 				if (!$iblock)
 				{
 					continue;
 				}
+				$name = (string)($iblock['NAME'] ?? $iblockId);
+
 				$total = null;
 				try
 				{
@@ -206,9 +231,26 @@ final class Indexer
 				}
 				$steps[] = [
 					'code' => 'iblock_' . $iblockId,
-					'title' => 'Инфоблок: ' . ($iblock['NAME'] ?? $iblockId),
+					'title' => 'Инфоблок: ' . $name,
 					'total' => $total,
 				];
+
+				if ($config['sections']['enabled'])
+				{
+					$totalSections = null;
+					try
+					{
+						$totalSections = (int)\CIBlockSection::GetList([], ['IBLOCK_ID' => $iblockId], true);
+					}
+					catch (\Throwable)
+					{
+					}
+					$steps[] = [
+						'code' => 'iblock_section_' . $iblockId,
+						'title' => 'Разделы: ' . $name,
+						'total' => $totalSections,
+					];
+				}
 			}
 		}
 
@@ -277,6 +319,25 @@ final class Indexer
 			return array_map(static fn ($r) => (int)$r['ID'], $rows);
 		}
 
+		if (mb_strpos($code, 'iblock_section_') === 0)
+		{
+			$iblockId = (int)mb_substr($code, 15);
+			$ids = [];
+			$result = \CIBlockSection::GetList(
+				['ID' => 'ASC'],
+				['>ID' => $lastId, '=IBLOCK_ID' => $iblockId, 'CHECK_PERMISSIONS' => 'N'],
+				false,
+				['ID'],
+				['nTopCount' => $limit]
+			);
+			while ($row = $result->Fetch())
+			{
+				$ids[] = (int)$row['ID'];
+			}
+
+			return $ids;
+		}
+
 		if (mb_strpos($code, 'iblock_') === 0)
 		{
 			$iblockId = (int)mb_substr($code, 7);
@@ -301,9 +362,9 @@ final class Indexer
 			return [];
 		}
 
-		if (mb_strpos($code, 'crm_dynamic_') === 0)
+		if (mb_strpos($code, 'crm_smart_') === 0)
 		{
-			$typeId = (int)mb_substr($code, 13);
+			$typeId = (int)mb_substr($code, 10);
 			$factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($typeId);
 			if (!$factory)
 			{
@@ -324,25 +385,7 @@ final class Indexer
 			'crm_deal' => '\CCrmDeal',
 			'crm_contact' => '\CCrmContact',
 			'crm_company' => '\CCrmCompany',
-			'crm_quote' => '\CCrmQuote',
 		];
-
-		if ($code === 'crm_smart_invoice')
-		{
-			$factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory(\CCrmOwnerType::SmartInvoice);
-			if (!$factory)
-			{
-				return [];
-			}
-			$items = $factory->getItems([
-				'select' => ['ID'],
-				'filter' => $filter,
-				'order' => $order,
-				'limit' => $limit,
-			]);
-
-			return array_map(static fn ($item) => (int)$item->getId(), $items);
-		}
 
 		$class = $map[$code] ?? null;
 		if (!$class || !class_exists($class))
@@ -373,19 +416,19 @@ final class Indexer
 			return $this->builder->buildUserDocument($id);
 		}
 
+		if (mb_strpos($code, 'iblock_section_') === 0)
+		{
+			return $this->builder->buildIblockSectionDocument($id);
+		}
+
 		if (mb_strpos($code, 'iblock_') === 0)
 		{
 			return $this->builder->buildIblockElementDocument($id);
 		}
 
-		if ($code === 'crm_smart_invoice')
+		if (mb_strpos($code, 'crm_smart_') === 0)
 		{
-			return $this->builder->buildCrmDocument(\CCrmOwnerType::SmartInvoice, $id);
-		}
-
-		if (mb_strpos($code, 'crm_dynamic_') === 0)
-		{
-			$typeId = (int)mb_substr($code, 13);
+			$typeId = (int)mb_substr($code, 10);
 
 			return $this->builder->buildCrmDocument($typeId, $id);
 		}
@@ -395,7 +438,6 @@ final class Indexer
 			'crm_deal' => \CCrmOwnerType::Deal,
 			'crm_contact' => \CCrmOwnerType::Contact,
 			'crm_company' => \CCrmOwnerType::Company,
-			'crm_quote' => \CCrmOwnerType::Quote,
 		];
 		$typeId = $map[$code] ?? null;
 
@@ -417,7 +459,6 @@ final class Indexer
 			\CCrmOwnerType::Deal => '\CCrmDeal',
 			\CCrmOwnerType::Contact => '\CCrmContact',
 			\CCrmOwnerType::Company => '\CCrmCompany',
-			\CCrmOwnerType::Quote => '\CCrmQuote',
 		];
 		$allowed = Config::allowedCrmEntityTypeIds();
 
@@ -506,7 +547,7 @@ final class Indexer
 
 		if (\Bitrix\Main\Loader::includeModule('iblock'))
 		{
-			foreach (Config::iblockIds() as $iblockId)
+			foreach (Config::iblockScopes() as $iblockId => $config)
 			{
 				try
 				{
@@ -540,6 +581,41 @@ final class Indexer
 				}
 				catch (\Throwable)
 				{
+				}
+
+				if ($config['sections']['enabled'])
+				{
+					try
+					{
+						$result = \CIBlockSection::GetList(
+							['ID' => 'ASC'],
+							[
+								'>=TIMESTAMP_X' => $since,
+								'=IBLOCK_ID' => $iblockId,
+							],
+							false,
+							['ID']
+						);
+						while ($row = $result->Fetch())
+						{
+							$document = $this->builder->buildIblockSectionDocument((int)$row['ID']);
+							if ($document !== null)
+							{
+								$bulk[] = ['index' => ['_index' => $index, '_id' =>
+									IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
+								]];
+								$bulk[] = $document;
+							}
+							$processed++;
+							if (count($bulk) >= 200)
+							{
+								$flush();
+							}
+						}
+					}
+					catch (\Throwable)
+					{
+					}
 				}
 			}
 		}

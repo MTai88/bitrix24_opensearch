@@ -72,3 +72,13 @@ $MESS['MTAI_OPENSEARCH_OPT_CANDIDATE_FACTOR_HINT'] = 'How many times more candid
 $MESS['MTAI_OPENSEARCH_OPT_BATCH_SIZE'] = 'Batch size';
 $MESS['MTAI_OPENSEARCH_OPT_BATCH_SIZE_HINT'] = 'Elements per reindex step (5–500).';
 $MESS['MTAI_OPENSEARCH_MAINTENANCE_HINT'] = 'Full reindex and index status are available on the <a href="mtai_opensearch.php?lang=' . LANGUAGE_ID . '">OpenSearch index maintenance</a> page.';
+
+// Search fields (2)
+$MESS['MTAI_OPENSEARCH_HEADING_SMART'] = 'Smart processes';
+$MESS['MTAI_OPENSEARCH_OPT_SMART_TYPES'] = 'Search in smart processes';
+$MESS['MTAI_OPENSEARCH_OPT_SMART_TYPES_HINT'] = 'Ctrl/Shift for multiple selection. Each selected process has its own field set.';
+$MESS['MTAI_OPENSEARCH_FIELD_SECTION_TITLE'] = 'Section name';
+$MESS['MTAI_OPENSEARCH_FIELD_SECTION_DESCRIPTION'] = 'Section description';
+$MESS['MTAI_OPENSEARCH_SECTION_SUBTITLE'] = 'Section';
+$MESS['MTAI_OPENSEARCH_FIELDS_SECTION_ONE'] = 'Iblock sections';
+$MESS['MTAI_OPENSEARCH_OPT_SEARCH_SECTIONS'] = 'Search in sections of this iblock';
