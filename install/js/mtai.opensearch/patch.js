@@ -287,7 +287,7 @@
 			}
 			html += sectionHtml(
 				'search-title-top-block-section',
-				msg('MTAI_OPENSEARCH_IBLOCK_PREFIX', 'Инфоблок') + ': ' + blockTitle,
+				blockTitle,
 				itemsHtml,
 				'mtai_iblock'
 			);
