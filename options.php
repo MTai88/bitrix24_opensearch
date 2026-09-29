@@ -479,6 +479,12 @@ $iblockScopeCfg = static fn (int $iblockId): array => is_array($scopes['iblock']
 						$sectionsEnabled = (bool)($sectionsCfg['enabled'] ?? false);
 						$sectionFields = is_array($sectionsCfg['fields'] ?? null) ? $sectionsCfg['fields'] : [];
 						$elementFields = is_array($cfg['fields'] ?? null) ? $cfg['fields'] : [];
+						// Свойства хранятся отдельным ключом, но в форме
+						// живут в том же select, что и поля элемента, —
+						// помечаем выбранными их объединение, иначе любое
+						// сохранение молча обнуляет свойства.
+						$properties = is_array($cfg['properties'] ?? null) ? $cfg['properties'] : [];
+						$elementSelected = array_merge($elementFields, $properties);
 
 						$elementOptions = $scopeOptions('iblock_element');
 						foreach (\Mtai\OpenSearch\FieldRegistry::iblockProperties($iblockId) as $code => $label)
@@ -489,7 +495,7 @@ $iblockScopeCfg = static fn (int $iblockId): array => is_array($scopes['iblock']
 						$inner = '<div class="mtai-os-subgroup-title">'
 							. Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_FIELDS_IBLOCK_ONE')])
 							. '</div>'
-							. $fieldSelect('scope_fields_iblock_' . $iblockId, $elementOptions, $elementFields)
+							. $fieldSelect('scope_fields_iblock_' . $iblockId, $elementOptions, $elementSelected)
 							. '<div class="mtai-os-subgroup">'
 							. '<label><input type="checkbox" name="scope_sections_iblock_' . $iblockId . '" value="Y"'
 							. ($sectionsEnabled ? ' checked' : '')
