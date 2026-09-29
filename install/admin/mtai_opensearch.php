@@ -99,8 +99,23 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 		logBox.scrollTop = logBox.scrollHeight;
 	}
 
+	/**
+	 * Пока статус запрашивается — ячейки таблиц серые, по завершении
+	 * (успех или ошибка) фон возвращается.
+	 */
+	function setStatusLoading(loading) {
+		['mtai-os-status', 'mtai-os-by-type'].forEach(function (id) {
+			var table = document.getElementById(id);
+			if (table) {
+				table.classList[loading ? 'add' : 'remove']('mtai-os-loading');
+			}
+		});
+	}
+
 	function refreshStatus() {
+		setStatusLoading(true);
 		runAction('status').then(function (response) {
+			setStatusLoading(false);
 			var d = response.data;
 			var map = {
 				ok: d.ok ? 'OK' : 'FAIL',
@@ -131,6 +146,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 				byType.appendChild(tr);
 			});
 		}, function (response) {
+			setStatusLoading(false);
 			log('status: ' + (response.errors[0] && response.errors[0].message), true);
 		});
 	}
@@ -213,6 +229,9 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 <style>
 	#mtai-os-log .mtai-os-error { color: #d0021b; }
 	#mtai-os-log div { border-bottom: 1px solid #f0f0f0; }
+	/* Обновление статуса: ячейки таблиц серые, пока идёт запрос */
+	#mtai-os-status td, #mtai-os-by-type td { transition: background-color 0.25s ease; }
+	#mtai-os-status.mtai-os-loading td, #mtai-os-by-type.mtai-os-loading td { background-color: #e4e4e4; color: #9a9a9a; }
 </style>
 
 <?php require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php'; ?>
