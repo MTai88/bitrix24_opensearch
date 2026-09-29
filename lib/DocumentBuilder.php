@@ -89,17 +89,19 @@ final class DocumentBuilder
 
 	/**
 	 * Имя UF-сущности CRM для чтения пользовательских полей.
+	 * Штатный резолвер: классика → CRM_LEAD/..., смарт-процессы →
+	 * CRM_<ID типа> (не entityTypeId!), смарт-счета → CRM_SMART_INVOICE.
 	 */
 	private function crmUfEntityName(int $entityTypeId): string
 	{
-		$map = [
-			\CCrmOwnerType::Lead => 'CRM_LEAD',
-			\CCrmOwnerType::Deal => 'CRM_DEAL',
-			\CCrmOwnerType::Contact => 'CRM_CONTACT',
-			\CCrmOwnerType::Company => 'CRM_COMPANY',
-		];
-
-		return $map[$entityTypeId] ?? ('CRM_' . $entityTypeId);
+		try
+		{
+			return (string)\CCrmOwnerType::ResolveUserFieldEntityID($entityTypeId);
+		}
+		catch (\Throwable)
+		{
+			return 'CRM_' . $entityTypeId;
+		}
 	}
 
 	/**

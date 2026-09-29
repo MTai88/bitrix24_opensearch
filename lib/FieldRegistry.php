@@ -122,11 +122,52 @@ final class FieldRegistry
 	/**
 	 * UF-поля смарт-процесса: код => название.
 	 *
+	 * ВАЖНО: UF-сущность смарт-процесса строится от ID типа
+	 * (например, CRM_4), а не от entityTypeId — резолвим штатным
+	 * CCrmOwnerType::ResolveUserFieldEntityID().
+	 *
 	 * @return array<string, string>
 	 */
-	public static function smartUserFields(int $typeId): array
+	public static function smartUserFields(int $entityTypeId): array
 	{
-		return self::userFields('CRM_' . $typeId);
+		if (!Loader::includeModule('crm'))
+		{
+			return [];
+		}
+		$entity = \CCrmOwnerType::ResolveUserFieldEntityID($entityTypeId);
+		if ($entity === '')
+		{
+			return [];
+		}
+
+		$result = self::userFields($entity);
+
+		// Подписи полей смарт-процесса хранятся в его настройках
+		// (EDIT_FORM_LABEL у них обычно пуст) — берём из фабрики.
+		try
+		{
+			$factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($entityTypeId);
+			if ($factory)
+			{
+				foreach ($factory->getFieldsCollection() as $field)
+				{
+					$name = $field->getName();
+					if (isset($result[$name]))
+					{
+						$title = trim((string)$field->getTitle());
+						if ($title !== '')
+						{
+							$result[$name] = $title;
+						}
+					}
+				}
+			}
+		}
+		catch (\Throwable)
+		{
+		}
+
+		return $result;
 	}
 
 	/**
