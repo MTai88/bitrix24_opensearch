@@ -77,3 +77,7 @@ $MESS['MTAI_OPENSEARCH_OPT_BATCH_SIZE_HINT'] = 'Сколько элементо�
 $MESS['MTAI_OPENSEARCH_MAINTENANCE_HINT'] = 'Полный переиндекс и статус индекса — на странице <a href="mtai_opensearch.php?lang=' . LANGUAGE_ID . '">Обслуживание индекса OpenSearch</a>.';
 
 $MESS['MTAI_OPENSEARCH_OPT_SEARCH_SECTIONS'] = 'Искать по разделам этого инфоблока';
+
+$MESS['MTAI_OPENSEARCH_SELECT_ALL'] = 'выбрать все';
+$MESS['MTAI_OPENSEARCH_UNSELECT_ALL'] = 'снять все';
+$MESS['MTAI_OPENSEARCH_SELECTED_N'] = 'выбрано: #N#';

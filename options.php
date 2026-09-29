@@ -142,21 +142,46 @@ $smartTypes = \Mtai\OpenSearch\FieldRegistry::smartTypes();
 $postArray = static fn ($value): array => is_array($value) ? $value : [];
 
 /**
- * Рендер multiple select полей скоупа.
+ * Select multiple полей + счётчик выбора + ссылки «выбрать все/снять все».
  *
  * @param array<string, string> $options code => label
  * @param string[] $selected
  */
-$multiSelect = static function (string $name, array $options, array $selected, int $size = 8): string {
-	$html = '<select name="' . $name . '[]" multiple size="' . $size . '" style="min-width: 360px;">';
+$fieldSelect = static function (string $selectName, array $options, array $selected, int $size = 7): string {
+	$selectedMap = array_map('strval', $selected);
+	$html = '<div class="mtai-os-fields">'
+		. '<select class="mtai-os-select" name="' . $selectName . '[]" multiple size="' . $size . '">';
 	foreach ($options as $code => $label)
 	{
 		$html .= '<option value="' . htmlspecialcharsbx($code) . '"'
-			. (in_array((string)$code, array_map('strval', $selected), true) ? ' selected' : '') . '>'
+			. (in_array((string)$code, $selectedMap, true) ? ' selected' : '') . '>'
 			. htmlspecialcharsbx($label) . '</option>';
 	}
+	$html .= '</select>'
+		. '<div class="mtai-os-actions">'
+		. '<span class="mtai-os-badge" data-badge-for="' . $selectName . '" data-pattern="'
+		. htmlspecialcharsbx(Loc::getMessage('MTAI_OPENSEARCH_SELECTED_N')) . '"></span>'
+		. '<a class="mtai-os-link" data-check-all="' . $selectName . '">'
+		. htmlspecialcharsbx(Loc::getMessage('MTAI_OPENSEARCH_SELECT_ALL')) . '</a>'
+		. '<a class="mtai-os-link" data-uncheck-all="' . $selectName . '">'
+		. htmlspecialcharsbx(Loc::getMessage('MTAI_OPENSEARCH_UNSELECT_ALL')) . '</a>'
+		. '</div>'
+		. '</div>';
 
-	return $html . '</select>';
+	return $html;
+};
+
+/**
+ * Карточка скоупа: заголовок (вкл/выкл) + содержимое.
+ */
+$card = static function (string $cardId, string $title, string $inner, bool $dim, string $checkbox = ''): string {
+	return '<div class="mtai-os-card' . ($dim ? ' mtai-os-card--off' : '') . '" id="' . $cardId . '">'
+		. '<div class="mtai-os-card-head">'
+		. $checkbox
+		. '<span class="mtai-os-card-title">' . htmlspecialcharsbx($title) . '</span>'
+		. '</div>'
+		. $inner
+		. '</div>';
 };
 
 /**
@@ -304,83 +329,119 @@ $iblockScopeCfg = static fn (int $iblockId): array => is_array($scopes['iblock']
 
 	<?php // ---------- Вкладка: область поиска ---------- ?>
 	<?php $tabControl->BeginNextTab(); ?>
+	<style>
+		.mtai-os-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; margin: 4px 0 8px; }
+		.mtai-os-card { border: 1px solid #dfe3e8; border-radius: 8px; padding: 10px 12px; background: #fbfcfd; transition: opacity .2s ease; }
+		.mtai-os-card--off { opacity: .5; }
+		.mtai-os-card--off .mtai-os-fields, .mtai-os-dim .mtai-os-fields { pointer-events: none; }
+		.mtai-os-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+		.mtai-os-card-title { font-weight: 600; font-size: 13px; }
+		.mtai-os-fields select { width: 100%; min-height: 140px; box-sizing: border-box; }
+		.mtai-os-actions { display: flex; gap: 12px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+		.mtai-os-link { color: #2f76c9; cursor: pointer; font-size: 12px; text-decoration: none; border-bottom: 1px dotted #9dbedd; }
+		.mtai-os-link:hover { color: #1b53a0; }
+		.mtai-os-badge { background: #e8eff8; color: #3f6ea8; border-radius: 10px; padding: 1px 9px; font-size: 11px; white-space: nowrap; }
+		.mtai-os-badge:empty { display: none; }
+		.mtai-os-dim { opacity: .55; }
+		.mtai-os-subgroup { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #e0e0e0; }
+		.mtai-os-subgroup-title { color: #666; font-size: 12px; margin-bottom: 6px; }
+		.mtai-os-selector { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 4px; flex-wrap: wrap; }
+		.mtai-os-selector select { min-width: 320px; }
+		.mtai-os-selector-label { font-weight: 600; padding-top: 4px; }
+		.mtai-os-note { color: #888; font-size: 12px; margin: 2px 0 8px; }
+	</style>
+
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_CRM') ?></td>
 	</tr>
-	<?php
-	$crmEntities = [
-		'crm_lead' => 'MTAI_OPENSEARCH_ENTITY_LEAD',
-		'crm_deal' => 'MTAI_OPENSEARCH_ENTITY_DEAL',
-		'crm_contact' => 'MTAI_OPENSEARCH_ENTITY_CONTACT',
-		'crm_company' => 'MTAI_OPENSEARCH_ENTITY_COMPANY',
-	];
-	foreach ($crmEntities as $scope => $langKey):
-		$cfg = $scopeCfg($scope);
-		$enabled = (bool)($cfg['enabled'] ?? false);
-		$fields = is_array($cfg['fields'] ?? null) ? $cfg['fields'] : [];
-		?>
-		<tr>
-			<td width="40%"><label for="entity_<?= $scope ?>"><?= Loc::getMessage($langKey) ?>:</label></td>
-			<td width="60%">
-				<input type="checkbox" name="entity_<?= $scope ?>" id="entity_<?= $scope ?>" value="Y"<?= $enabled ? ' checked' : '' ?>>
-			</td>
-		</tr>
-		<tr>
-			<td colspan="2" style="padding-left: 42px;">
-				<div style="margin-bottom: 4px; color: #4a4a4a;"><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage($langKey)]) ?>:</div>
-				<?= $multiSelect('scope_fields_' . $scope, $scopeOptions($scope), $fields) ?>
-				<br><small><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_HINT') ?></small>
-			</td>
-		</tr>
-	<?php endforeach; ?>
+	<tr>
+		<td colspan="2">
+			<div class="mtai-os-note"><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_HINT') ?></div>
+			<div class="mtai-os-cards">
+				<?php
+				$crmEntities = [
+					'crm_lead' => 'MTAI_OPENSEARCH_ENTITY_LEAD',
+					'crm_deal' => 'MTAI_OPENSEARCH_ENTITY_DEAL',
+					'crm_contact' => 'MTAI_OPENSEARCH_ENTITY_CONTACT',
+					'crm_company' => 'MTAI_OPENSEARCH_ENTITY_COMPANY',
+				];
+				foreach ($crmEntities as $scope => $langKey):
+					$cfg = $scopeCfg($scope);
+					$enabled = (bool)($cfg['enabled'] ?? false);
+					$fields = is_array($cfg['fields'] ?? null) ? $cfg['fields'] : [];
+					$checkbox = '<input type="checkbox" name="entity_' . $scope . '" id="entity_' . $scope
+						. '" value="Y"' . ($enabled ? ' checked' : '') . ' data-dim-card="card-' . $scope . '">';
+					echo $card(
+						'card-' . $scope,
+						Loc::getMessage($langKey),
+						$fieldSelect('scope_fields_' . $scope, $scopeOptions($scope), $fields),
+						!$enabled,
+						$checkbox
+					);
+				endforeach;
+				?>
+			</div>
+		</td>
+	</tr>
 
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_SMART') ?></td>
 	</tr>
 	<tr>
-		<td width="40%"><label for="smart_types"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_SMART_TYPES') ?>:</label></td>
-		<td width="60%">
-			<select name="smart_types[]" id="smart_types" multiple size="6" style="min-width: 360px;">
+		<td colspan="2">
+			<div class="mtai-os-selector">
+				<span class="mtai-os-selector-label"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_SMART_TYPES') ?>:</span>
+				<select name="smart_types[]" id="smart_types" multiple size="5">
+					<?php
+					$smartSelected = array_keys(is_array($scopes['smart'] ?? null) ? $scopes['smart'] : []);
+					$smartSelectedMap = array_map('strval', $smartSelected);
+					foreach ($smartTypes as $typeId => $title):
+						?>
+						<option value="<?= (int)$typeId ?>"<?= in_array((string)$typeId, $smartSelectedMap, true) ? ' selected' : '' ?>>
+							<?= htmlspecialcharsbx($title) ?>
+						</option>
+					<?php endforeach; ?>
+				</select>
+			</div>
+			<div class="mtai-os-note"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_SMART_TYPES_HINT') ?></div>
+			<div class="mtai-os-cards" id="mtai-os-smart-cards">
 				<?php
-				$smartSelected = array_keys(is_array($scopes['smart'] ?? null) ? $scopes['smart'] : []);
 				foreach ($smartTypes as $typeId => $title):
+					$smartCfg = is_array($scopes['smart'][$typeId] ?? null) ? $scopes['smart'][$typeId] : [];
+					$smartFields = is_array($smartCfg['fields'] ?? null) ? $smartCfg['fields'] : [];
 					?>
-					<option value="<?= (int)$typeId ?>"<?= in_array((string)$typeId, array_map('strval', $smartSelected), true) || in_array((int)$typeId, $smartSelected, true) ? ' selected' : '' ?>>
-						<?= htmlspecialcharsbx($title) ?>
-					</option>
+					<div data-smart-block="<?= (int)$typeId ?>" style="display: none;">
+						<?= $card(
+							'card-smart-' . (int)$typeId,
+							(string)$title,
+							$fieldSelect('scope_fields_smart_' . (int)$typeId, $scopeOptions('smart', (int)$typeId), $smartFields, 6),
+							false
+						) ?>
+					</div>
 				<?php endforeach; ?>
-			</select>
-			<br><small><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_SMART_TYPES_HINT') ?></small>
+			</div>
 		</td>
 	</tr>
-	<?php foreach ($smartTypes as $typeId => $title):
-		$smartCfg = is_array($scopes['smart'][$typeId] ?? null) ? $scopes['smart'][$typeId] : [];
-		$smartFields = is_array($smartCfg['fields'] ?? null) ? $smartCfg['fields'] : [];
-		?>
-		<tr data-smart-block="<?= (int)$typeId ?>" style="display: none;">
-			<td colspan="2" style="padding-left: 42px;">
-				<div style="margin-bottom: 4px; color: #4a4a4a;"><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => htmlspecialcharsbx($title)]) ?>:</div>
-				<?= $multiSelect('scope_fields_smart_' . (int)$typeId, $scopeOptions('smart', (int)$typeId), $smartFields, 6) ?>
-			</td>
-		</tr>
-	<?php endforeach; ?>
 
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_USERS') ?></td>
 	</tr>
-	<?php
-	$userCfg = $scopeCfg('user');
-	$userEnabled = (bool)($userCfg['enabled'] ?? false);
-	$userFields = is_array($userCfg['fields'] ?? null) ? $userCfg['fields'] : [];
-	?>
 	<tr>
-		<td width="40%"><label for="search_users"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_SEARCH_USERS') ?>:</label></td>
-		<td width="60%"><input type="checkbox" name="search_users" id="search_users" value="Y"<?= $userEnabled ? ' checked' : '' ?>></td>
-	</tr>
-	<tr>
-		<td colspan="2" style="padding-left: 42px;">
-			<div style="margin-bottom: 4px; color: #4a4a4a;"><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_HEADING_USERS_ONE')]) ?>:</div>
-			<?= $multiSelect('scope_fields_user', $scopeOptions('user'), $userFields) ?>
+		<td colspan="2">
+			<?php
+			$userCfg = $scopeCfg('user');
+			$userEnabled = (bool)($userCfg['enabled'] ?? false);
+			$userFields = is_array($userCfg['fields'] ?? null) ? $userCfg['fields'] : [];
+			$checkbox = '<input type="checkbox" name="search_users" id="search_users" value="Y"'
+				. ($userEnabled ? ' checked' : '') . ' data-dim-card="card-user">';
+			echo $card(
+				'card-user',
+				Loc::getMessage('MTAI_OPENSEARCH_HEADING_USERS_ONE'),
+				$fieldSelect('scope_fields_user', $scopeOptions('user'), $userFields),
+				!$userEnabled,
+				$checkbox
+			);
+			?>
 		</td>
 	</tr>
 
@@ -388,60 +449,68 @@ $iblockScopeCfg = static fn (int $iblockId): array => is_array($scopes['iblock']
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_IBLOCKS') ?></td>
 	</tr>
 	<tr>
-		<td width="40%"><label for="iblocks"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_IBLOCKS') ?>:</label></td>
-		<td width="60%">
-			<select name="iblocks[]" id="iblocks" multiple size="10" style="min-width: 360px;">
+		<td colspan="2">
+			<div class="mtai-os-selector">
+				<span class="mtai-os-selector-label"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_IBLOCKS') ?>:</span>
+				<select name="iblocks[]" id="iblocks" multiple size="8">
+					<?php
+					$selectedIblocks = array_keys(is_array($scopes['iblock'] ?? null) ? $scopes['iblock'] : []);
+					$selectedIblocksMap = array_map('strval', $selectedIblocks);
+					foreach ($iblockTree as $typeTitle => $iblocksOfType):
+						?>
+						<optgroup label="<?= htmlspecialcharsbx($typeTitle) ?>">
+							<?php foreach ($iblocksOfType as $iblockId => $title): ?>
+								<option value="<?= (int)$iblockId ?>"<?= in_array((string)$iblockId, $selectedIblocksMap, true) ? ' selected' : '' ?>>
+									<?= htmlspecialcharsbx($title) ?>
+								</option>
+							<?php endforeach; ?>
+						</optgroup>
+					<?php endforeach; ?>
+				</select>
+			</div>
+			<div class="mtai-os-note"><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_IBLOCKS_HINT') ?></div>
+			<div class="mtai-os-cards" id="mtai-os-iblock-cards">
 				<?php
-				$selectedIblocks = array_keys(is_array($scopes['iblock'] ?? null) ? $scopes['iblock'] : []);
 				foreach ($iblockTree as $typeTitle => $iblocksOfType):
-					?>
-					<optgroup label="<?= htmlspecialcharsbx($typeTitle) ?>">
-						<?php foreach ($iblocksOfType as $iblockId => $title): ?>
-							<option value="<?= (int)$iblockId ?>"<?= in_array((string)$iblockId, array_map('strval', $selectedIblocks), true) || in_array((int)$iblockId, $selectedIblocks, true) ? ' selected' : '' ?>>
-								<?= htmlspecialcharsbx($title) ?>
-							</option>
-						<?php endforeach; ?>
-					</optgroup>
+					foreach ($iblocksOfType as $iblockId => $title):
+						$iblockId = (int)$iblockId;
+						$cfg = $iblockScopeCfg($iblockId);
+						$sectionsCfg = is_array($cfg['sections'] ?? null) ? $cfg['sections'] : [];
+						$sectionsEnabled = (bool)($sectionsCfg['enabled'] ?? false);
+						$sectionFields = is_array($sectionsCfg['fields'] ?? null) ? $sectionsCfg['fields'] : [];
+						$elementFields = is_array($cfg['fields'] ?? null) ? $cfg['fields'] : [];
+
+						$elementOptions = $scopeOptions('iblock_element');
+						foreach (\Mtai\OpenSearch\FieldRegistry::iblockProperties($iblockId) as $code => $label)
+						{
+							$elementOptions[$code] = $label;
+						}
+
+						$inner = '<div class="mtai-os-subgroup-title">'
+							. Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_FIELDS_IBLOCK_ONE')])
+							. '</div>'
+							. $fieldSelect('scope_fields_iblock_' . $iblockId, $elementOptions, $elementFields)
+							. '<div class="mtai-os-subgroup">'
+							. '<label><input type="checkbox" name="scope_sections_iblock_' . $iblockId . '" value="Y"'
+							. ($sectionsEnabled ? ' checked' : '')
+							. ' data-dim-target="mtai-os-secfields-' . $iblockId . '"> '
+							. Loc::getMessage('MTAI_OPENSEARCH_OPT_SEARCH_SECTIONS') . '</label>'
+							. '<div id="mtai-os-secfields-' . $iblockId . '" class="' . ($sectionsEnabled ? '' : 'mtai-os-dim') . '">'
+							. '<div class="mtai-os-subgroup-title">'
+							. Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_FIELDS_SECTION_ONE')])
+							. '</div>'
+							. $fieldSelect('scope_section_fields_iblock_' . $iblockId, $scopeOptions('iblock_section', $iblockId), $sectionFields, 5)
+							. '</div>'
+							. '</div>';
+						?>
+						<div data-iblock-block="<?= $iblockId ?>" style="display: none;">
+							<?= $card('card-iblock-' . $iblockId, (string)$title, $inner, false) ?>
+						</div>
+					<?php endforeach; ?>
 				<?php endforeach; ?>
-			</select>
-			<br><small><?= Loc::getMessage('MTAI_OPENSEARCH_OPT_IBLOCKS_HINT') ?></small>
+			</div>
 		</td>
 	</tr>
-	<?php foreach ($iblockTree as $typeTitle => $iblocksOfType): ?>
-		<?php foreach ($iblocksOfType as $iblockId => $title):
-			$iblockId = (int)$iblockId;
-			$cfg = $iblockScopeCfg($iblockId);
-			$sectionsCfg = is_array($cfg['sections'] ?? null) ? $cfg['sections'] : [];
-			$sectionsEnabled = (bool)($sectionsCfg['enabled'] ?? false);
-			$sectionFields = is_array($sectionsCfg['fields'] ?? null) ? $sectionsCfg['fields'] : [];
-			$elementFields = is_array($cfg['fields'] ?? null) ? $cfg['fields'] : [];
-			$properties = is_array($cfg['properties'] ?? null) ? $cfg['properties'] : [];
-
-			$elementOptions = $scopeOptions('iblock_element');
-			foreach (\Mtai\OpenSearch\FieldRegistry::iblockProperties($iblockId) as $code => $label)
-			{
-				$elementOptions[$code] = $label;
-			}
-			?>
-			<tr data-iblock-block="<?= $iblockId ?>" style="display: none;">
-				<td colspan="2" style="padding-left: 42px; border-top: 1px solid #e0e0e0; padding-top: 10px;">
-					<div style="margin-bottom: 6px; font-weight: bold;"><?= htmlspecialcharsbx($title) ?></div>
-
-					<div style="margin-bottom: 4px; color: #4a4a4a;"><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_FIELDS_IBLOCK_ONE')]) ?>:</div>
-					<?= $multiSelect('scope_fields_iblock_' . $iblockId, $elementOptions, $elementFields) ?>
-
-					<div style="margin: 8px 0 4px;">
-						<label>
-							<input type="checkbox" name="scope_sections_iblock_<?= $iblockId ?>" value="Y"<?= $sectionsEnabled ? ' checked' : '' ?>>
-							<?= Loc::getMessage('MTAI_OPENSEARCH_OPT_SEARCH_SECTIONS') ?>
-						</label>
-					</div>
-					<div style="margin-bottom: 4px; color: #4a4a4a;"><?= Loc::getMessage('MTAI_OPENSEARCH_FIELDS_FOR', ['#ENTITY#' => Loc::getMessage('MTAI_OPENSEARCH_FIELDS_SECTION_ONE')]) ?>:</div>
-					<?= $multiSelect('scope_section_fields_iblock_' . $iblockId, $scopeOptions('iblock_section', $iblockId), $sectionFields, 6) ?>
-				</td>
-			</tr>
-		<?php endforeach; ?>
-	<?php endforeach; ?>
 
 	<tr class="heading">
 		<td colspan="2"><?= Loc::getMessage('MTAI_OPENSEARCH_HEADING_LIMITS') ?></td>
@@ -485,6 +554,34 @@ $iblockScopeCfg = static fn (int $iblockId): array => is_array($scopes['iblock']
 	(function () {
 		'use strict';
 
+		// --- Счётчики выбранных полей ---
+		function updateBadge(name) {
+			var badge = document.querySelector('[data-badge-for="' + name + '"]');
+			var select = document.querySelector('select[name="' + name + '[]"]');
+			if (!badge || !select) {
+				return;
+			}
+			var count = 0;
+			for (var i = 0; i < select.options.length; i++) {
+				if (select.options[i].selected) {
+					count++;
+				}
+			}
+			badge.textContent = (badge.getAttribute('data-pattern') || '#N#').replace('#N#', String(count));
+		}
+
+		function setAll(name, check) {
+			var select = document.querySelector('select[name="' + name + '[]"]');
+			if (!select) {
+				return;
+			}
+			for (var i = 0; i < select.options.length; i++) {
+				select.options[i].selected = check;
+			}
+			updateBadge(name);
+		}
+
+		// --- Видимость карточек смартов/инфоблоков ---
 		function syncBlocks(selectId, blockAttr) {
 			var select = document.getElementById(selectId);
 			if (!select) {
@@ -502,15 +599,58 @@ $iblockScopeCfg = static fn (int $iblockId): array => is_array($scopes['iblock']
 			}
 		}
 
-		var smart = document.getElementById('smart_types');
-		if (smart) {
-			smart.addEventListener('change', function () { syncBlocks('smart_types', 'data-smart-block'); });
-			syncBlocks('smart_types', 'data-smart-block');
+		// --- Затемнение карточки выключенной сущности ---
+		function syncDimCard(checkbox) {
+			var card = document.getElementById(checkbox.getAttribute('data-dim-card'));
+			if (card) {
+				card.classList[checkbox.checked ? 'remove' : 'add']('mtai-os-card--off');
+			}
 		}
-		var iblocks = document.getElementById('iblocks');
-		if (iblocks) {
-			iblocks.addEventListener('change', function () { syncBlocks('iblocks', 'data-iblock-block'); });
-			syncBlocks('iblocks', 'data-iblock-block');
+
+		function syncDimTarget(checkbox) {
+			var target = document.getElementById(checkbox.getAttribute('data-dim-target'));
+			if (target) {
+				target.classList[checkbox.checked ? 'remove' : 'add']('mtai-os-dim');
+			}
 		}
+
+		// --- Делегирование событий ---
+		document.addEventListener('click', function (e) {
+			var el = e.target.closest ? e.target.closest('[data-check-all],[data-uncheck-all]') : null;
+			if (!el) {
+				return;
+			}
+			e.preventDefault();
+			setAll(el.getAttribute(el.hasAttribute('data-check-all') ? 'data-check-all' : 'data-uncheck-all'),
+				el.hasAttribute('data-check-all'));
+		});
+
+		document.addEventListener('change', function (e) {
+			var t = e.target;
+			if (t.tagName === 'SELECT' && t.name && t.name.slice(-2) === '[]') {
+				updateBadge(t.name.slice(0, -2));
+			}
+			if (t.getAttribute && t.getAttribute('data-dim-card')) {
+				syncDimCard(t);
+			}
+			if (t.getAttribute && t.getAttribute('data-dim-target')) {
+				syncDimTarget(t);
+			}
+			if (t.id === 'smart_types') {
+				syncBlocks('smart_types', 'data-smart-block');
+			}
+			if (t.id === 'iblocks') {
+				syncBlocks('iblocks', 'data-iblock-block');
+			}
+		});
+
+		// --- Инициализация ---
+		document.querySelectorAll('[data-badge-for]').forEach(function (b) {
+			updateBadge(b.getAttribute('data-badge-for'));
+		});
+		document.querySelectorAll('[data-dim-card]').forEach(syncDimCard);
+		document.querySelectorAll('[data-dim-target]').forEach(syncDimTarget);
+		syncBlocks('smart_types', 'data-smart-block');
+		syncBlocks('iblocks', 'data-iblock-block');
 	})();
 </script>
