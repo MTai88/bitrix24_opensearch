@@ -754,13 +754,11 @@ final class DocumentBuilder
 		}
 		$fields = array_filter($fields, static fn ($v) => trim((string)$v) !== '');
 
-		// Ссылка на раздел по шаблону SECTION_PAGE_URL инфоблока.
-		$url = (string)($iblock['SECTION_PAGE_URL'] ?? '');
-		$url = str_replace(
-			['#SITE_DIR#', '#SECTION_ID#', '#ID#'],
-			[$this->iblockSiteDir((string)($iblock['LID'] ?? SITE_ID)), $sectionId, $sectionId],
-			$url
-		);
+		// Ссылка на раздел по шаблону SECTION_PAGE_URL инфоблока:
+		// разворачиваем штатным механизмом (подставляет #IBLOCK_ID#,
+		// #SECTION_ID#, #SECTION_CODE# и пр.), как для элементов.
+		$url = \CIBlock::ReplaceDetailUrl((string)($iblock['SECTION_PAGE_URL'] ?? ''), $section, false, 'S');
+		$url = str_replace('#SITE_DIR#', $this->iblockSiteDir((string)($iblock['LID'] ?? SITE_ID)), $url);
 
 		return [
 			'entity_type' => IndexManager::TYPE_IBLOCK_SECTION,

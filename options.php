@@ -61,28 +61,31 @@ $error = null;
 		&& $POST_RIGHT >= 'W'
 	)
 	{
-		if ($request->getPost('test_connection') !== null)
+	if ($request->getPost('test_connection') !== null)
+	{
+		try
 		{
-			try
+			$client = new \Mtai\OpenSearch\OpenSearchClient(
+				rtrim((string)$request->getPost('scheme') ?: 'http', '://') . '://'
+				. ((string)$request->getPost('host') ?: 'opensearch') . ':'
+				. ((int)$request->getPost('port') ?: 9200)
+			);
+			// rootInfo() не глотает исключение — в сообщении об ошибке
+			// остаётся настоящая причина (DNS/таймаут/схема).
+			$info = $client->rootInfo();
+			$version = (string)($info['version']['number'] ?? '');
+			if ($version === '')
 			{
-				$client = new \Mtai\OpenSearch\OpenSearchClient(
-					rtrim((string)$request->getPost('scheme') ?: 'http', '://') . '://'
-					. ((string)$request->getPost('host') ?: 'opensearch') . ':'
-					. ((int)$request->getPost('port') ?: 9200)
-				);
-				$version = $client->version();
-				if ($version === '')
-				{
-					throw new \RuntimeException('no version in response');
-				}
+				throw new \RuntimeException('кластер ответил без номера версии');
+			}
 
-				$note = str_replace('#VERSION#', $version, Loc::getMessage('MTAI_OPENSEARCH_TEST_OK'));
-			}
-			catch (\Throwable $e)
-			{
-				$error = str_replace('#ERROR#', $e->getMessage(), Loc::getMessage('MTAI_OPENSEARCH_TEST_FAIL'));
-			}
+			$note = str_replace('#VERSION#', $version, Loc::getMessage('MTAI_OPENSEARCH_TEST_OK'));
 		}
+		catch (\Throwable $e)
+		{
+			$error = str_replace('#ERROR#', $e->getMessage(), Loc::getMessage('MTAI_OPENSEARCH_TEST_FAIL'));
+		}
+	}
 		elseif (
 			// Кнопка может называться по-разному: Update (классические
 			// settings-страницы) либо save/apply (кнопки CAdminTabControl).

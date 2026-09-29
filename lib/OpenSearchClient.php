@@ -44,11 +44,24 @@ class OpenSearchClient
 		$ok = $http->query($method, $url, $payload);
 		if ($ok === false)
 		{
+			// Убираем PHP-специфику из текста ошибки транспорта —
+			// наружу должна уходить причина (DNS/таймаут/схема),
+			// а не имена внутренних функций.
+			$reasons = array_map(
+				static function ($e) {
+					$text = is_string($e) ? $e : (string)json_encode($e);
+					// «[2] stream_socket_client(): php_network_getaddresses: ...»
+					// → «getaddrinfo ... failed: ...»
+					$text = preg_replace('/^\[\d+\]\s*/', '', $text);
+					$text = preg_replace('/^stream_socket_client\(\):\s*/i', '', $text);
+					$text = preg_replace('/^php_[a-z_]+:?\s*/i', '', $text);
+
+					return $text;
+				},
+				(array)($http->getError() ?: ['unknown'])
+			);
 			throw new OpenSearchException(
-				'OpenSearch connection failed: ' . implode('; ', array_map(
-					static fn ($e) => is_string($e) ? $e : json_encode($e),
-					(array)($http->getError() ?: ['unknown'])
-				))
+				'OpenSearch connection failed: ' . implode('; ', $reasons)
 			);
 		}
 
@@ -105,6 +118,16 @@ class OpenSearchClient
 		{
 			return '';
 		}
+	}
+
+	/**
+	 * Корневой ответ кластера. В отличие от version()/ping(), не глотает
+	 * исключение — текст ошибки (DNS, таймаут, неверная схема) попадает
+	 * в диагностику «Проверить соединение».
+	 */
+	public function rootInfo(): array
+	{
+		return $this->request('GET', '/');
 	}
 
 	public function indexExists(string $name): bool
