@@ -35,8 +35,77 @@ final class Indexer
 			$id,
 			$document
 		);
+		$this->notifyIndexed($id, $document);
 
 		return true;
+	}
+
+	/**
+	 * Событие для внешних модулей (mtai.aisearch строит по нему векторы).
+	 * Ошибка обработчика не должна откатывать уже записанный документ.
+	 */
+	private function notifyIndexed(string $id, array $document): void
+	{
+		$this->notify('onAfterIndexDocument', $id, $document);
+	}
+
+	private function notifyDeleted(string $id): void
+	{
+		$this->notify('onAfterDeleteDocument', $id, null);
+	}
+
+	private function notify(string $eventName, string $id, ?array $document): void
+	{
+		try
+		{
+			$event = new \Bitrix\Main\Event(Config::MODULE_ID, $eventName, [
+				'id' => $id,
+				'document' => $document,
+			]);
+			$event->send();
+		}
+		catch (\Throwable $e)
+		{
+			AddMessage2Log(
+				'mtai.opensearch ' . $eventName . ': ' . $e->getMessage(),
+				Config::MODULE_ID
+			);
+		}
+	}
+
+	/**
+	 * @param array[] $bulk
+	 * @param array<int, array{0: string, 1: array}> $indexed
+	 */
+	private function pushBulk(array &$bulk, array &$indexed, string $index, array $document): void
+	{
+		$docId = IndexManager::documentId(
+			(string)$document['entity_type'],
+			(int)$document['entity_id']
+		);
+		$bulk[] = ['index' => ['_index' => $index, '_id' => $docId]];
+		$bulk[] = $document;
+		$indexed[] = [$docId, $document];
+	}
+
+	/**
+	 * @param array[] $bulk
+	 * @param array<int, array{0: string, 1: array}> $indexed
+	 */
+	private function flushBulk(\Mtai\OpenSearch\OpenSearchClient $client, array &$bulk, array &$indexed): void
+	{
+		if ($bulk === [])
+		{
+			return;
+		}
+
+		$client->bulk($bulk);
+		foreach ($indexed as [$docId, $document])
+		{
+			$this->notifyIndexed($docId, $document);
+		}
+		$bulk = [];
+		$indexed = [];
 	}
 
 	// ------------------------------------------------------------------
@@ -64,10 +133,7 @@ final class Indexer
 	{
 		$typeName = DocumentBuilder::crmEntityTypeCode($entityTypeId);
 
-		return $this->indexManager->client()->deleteDocument(
-			IndexManager::indexName(),
-			IndexManager::documentId($typeName, $entityId)
-		);
+		return $this->deleteById(IndexManager::documentId($typeName, $entityId));
 	}
 
 	public function indexUser(int $userId): bool
@@ -83,10 +149,7 @@ final class Indexer
 
 	public function deleteUser(int $userId): bool
 	{
-		return $this->indexManager->client()->deleteDocument(
-			IndexManager::indexName(),
-			IndexManager::documentId(IndexManager::TYPE_USER, $userId)
-		);
+		return $this->deleteById(IndexManager::documentId(IndexManager::TYPE_USER, $userId));
 	}
 
 	public function indexIblockElement(int $elementId): bool
@@ -108,10 +171,7 @@ final class Indexer
 
 	public function deleteIblockElement(int $elementId): bool
 	{
-		return $this->indexManager->client()->deleteDocument(
-			IndexManager::indexName(),
-			IndexManager::documentId(IndexManager::TYPE_IBLOCK, $elementId)
-		);
+		return $this->deleteById(IndexManager::documentId(IndexManager::TYPE_IBLOCK, $elementId));
 	}
 
 	public function indexIblockSection(int $sectionId): bool
@@ -135,10 +195,20 @@ final class Indexer
 
 	public function deleteIblockSection(int $sectionId): bool
 	{
-		return $this->indexManager->client()->deleteDocument(
-			IndexManager::indexName(),
+		return $this->deleteById(
 			IndexManager::documentId(IndexManager::TYPE_IBLOCK_SECTION, $sectionId)
 		);
+	}
+
+	private function deleteById(string $id): bool
+	{
+		$ok = $this->indexManager->client()->deleteDocument(IndexManager::indexName(), $id);
+		if ($ok)
+		{
+			$this->notifyDeleted($id);
+		}
+
+		return $ok;
 	}
 
 	// ------------------------------------------------------------------
@@ -275,6 +345,7 @@ final class Indexer
 		}
 
 		$bulk = [];
+		$indexed = [];
 		foreach ($ids as $id)
 		{
 			try
@@ -293,16 +364,11 @@ final class Indexer
 			}
 			if ($document !== null)
 			{
-				$docId = IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id']);
-				$bulk[] = ['index' => ['_index' => $index, '_id' => $docId]];
-				$bulk[] = $document;
+				$this->pushBulk($bulk, $indexed, $index, $document);
 			}
 		}
 
-		if ($bulk !== [])
-		{
-			$client->bulk($bulk);
-		}
+		$this->flushBulk($client, $bulk, $indexed);
 
 		return [
 			'processed' => count($ids),
@@ -485,12 +551,9 @@ final class Indexer
 		$allowed = Config::allowedCrmEntityTypeIds();
 
 		$bulk = [];
-		$flush = function () use ($client, $index, &$bulk, &$processed): void {
-			if ($bulk !== [])
-			{
-				$client->bulk($bulk);
-				$bulk = [];
-			}
+		$indexed = [];
+		$flush = function () use ($client, &$bulk, &$indexed): void {
+			$this->flushBulk($client, $bulk, $indexed);
 		};
 
 		foreach ($crmMap as $typeId => $class)
@@ -517,10 +580,7 @@ final class Indexer
 					$document = $this->builder->buildCrmDocument($typeId, (int)$row['ID']);
 					if ($document !== null)
 					{
-						$bulk[] = ['index' => ['_index' => $index, '_id' =>
-							IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
-						]];
-						$bulk[] = $document;
+						$this->pushBulk($bulk, $indexed, $index, $document);
 					}
 					$count++;
 					$processed++;
@@ -550,10 +610,7 @@ final class Indexer
 					$document = $this->builder->buildUserDocument((int)$row['ID']);
 					if ($document !== null)
 					{
-						$bulk[] = ['index' => ['_index' => $index, '_id' =>
-							IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
-						]];
-						$bulk[] = $document;
+						$this->pushBulk($bulk, $indexed, $index, $document);
 					}
 					$processed++;
 					if (count($bulk) >= 200)
@@ -589,10 +646,7 @@ final class Indexer
 						$document = $this->builder->buildIblockElementDocument((int)$row['ID']);
 						if ($document !== null)
 						{
-							$bulk[] = ['index' => ['_index' => $index, '_id' =>
-								IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
-							]];
-							$bulk[] = $document;
+							$this->pushBulk($bulk, $indexed, $index, $document);
 						}
 						$processed++;
 						if (count($bulk) >= 200)
@@ -623,10 +677,7 @@ final class Indexer
 							$document = $this->builder->buildIblockSectionDocument((int)$row['ID']);
 							if ($document !== null)
 							{
-								$bulk[] = ['index' => ['_index' => $index, '_id' =>
-									IndexManager::documentId((string)$document['entity_type'], (int)$document['entity_id'])
-								]];
-								$bulk[] = $document;
+								$this->pushBulk($bulk, $indexed, $index, $document);
 							}
 							$processed++;
 							if (count($bulk) >= 200)

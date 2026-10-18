@@ -79,6 +79,9 @@ final class SearchService
 		$response = $this->indexManager->client()->search(IndexManager::indexName(), $body);
 
 		$hits = (array)($response['hits']['hits'] ?? []);
+		// Пустой BM25 не прерывает поиск: обработчик onSearchHits
+		// (гибридный kNN) может найти то, чего нет в полнотекстовой выдаче.
+		$hits = $this->applySearchHits($query, $entityTypes, (array)$iblockIds, $categoryId, $userId, $hits);
 		if ($hits === [])
 		{
 			return [];
@@ -152,6 +155,58 @@ final class SearchService
 		}
 
 		return array_slice($items, 0, $totalLimit);
+	}
+
+	/**
+	 * Событие onSearchHits: внешний модуль (mtai.aisearch) может заменить
+	 * упорядоченный список хитов OpenSearch. Элемент хита — массив с _source,
+	 * как в ответе _search. Если обработчик ничего не вернул или упал,
+	 * остаются исходные хиты BM25.
+	 *
+	 * @param string[] $entityTypes
+	 * @param int[] $iblockIds
+	 * @param array[] $hits
+	 * @return array[]
+	 */
+	private function applySearchHits(
+		string $query,
+		array $entityTypes,
+		array $iblockIds,
+		?int $categoryId,
+		int $userId,
+		array $hits
+	): array {
+		try
+		{
+			$event = new \Bitrix\Main\Event(Config::MODULE_ID, 'onSearchHits', [
+				'query' => $query,
+				'entityTypes' => array_values($entityTypes),
+				'iblockIds' => array_values(array_map('intval', $iblockIds)),
+				'categoryId' => $categoryId,
+				'userId' => $userId,
+				'hits' => $hits,
+			]);
+			$event->send();
+
+			foreach ($event->getResults() as $result)
+			{
+				if ($result->getType() !== \Bitrix\Main\EventResult::SUCCESS)
+				{
+					continue;
+				}
+				$params = $result->getParameters();
+				if (is_array($params) && array_key_exists('hits', $params) && is_array($params['hits']))
+				{
+					return array_values($params['hits']);
+				}
+			}
+		}
+		catch (\Throwable $e)
+		{
+			AddMessage2Log('mtai.opensearch onSearchHits: ' . $e->getMessage(), Config::MODULE_ID);
+		}
+
+		return $hits;
 	}
 
 	/**
@@ -429,7 +484,7 @@ final class SearchService
 			}
 		}
 
-		$items = [];
+		$byId = [];
 		foreach ($idsByTypeId as $typeId => $ids)
 		{
 			try
@@ -445,11 +500,23 @@ final class SearchService
 
 				foreach ($adapter->adapt($searchResult) as $item)
 				{
-					$items[] = $item;
+					$byId[(int)$item->getId()] = $item;
 				}
 			}
 			catch (\Throwable)
 			{
+			}
+		}
+
+		// Адаптер CRM возвращает элементы в своём порядке. Для ранжирования
+		// (BM25 и гибрид) нужен порядок хитов.
+		$items = [];
+		foreach ($sources as $source)
+		{
+			$entityId = (int)($source['entity_id'] ?? 0);
+			if (isset($byId[$entityId]))
+			{
+				$items[] = $byId[$entityId];
 			}
 		}
 
